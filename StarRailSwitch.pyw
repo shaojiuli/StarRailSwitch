@@ -19,10 +19,13 @@ from datetime import datetime, timedelta
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 APP_TITLE = "星穹铁道账号切换"
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FROZEN = getattr(sys, "frozen", False)  # 是否为 PyInstaller 打包的 exe
+# 数据放在 exe（或脚本）所在目录；单文件 exe 运行时 __file__ 位于会被删除的临时解压目录
+BASE_DIR = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))
 PROFILE_DIR = os.path.join(BASE_DIR, "profiles")
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
-ICON_PATH = os.path.join(BASE_DIR, "logo.ico")
+# 图标随 exe 一起打包，从解压目录读取
+ICON_PATH = os.path.join(getattr(sys, "_MEIPASS", BASE_DIR), "logo.ico")
 APP_ID = "StarRailSwitch.AccountSwitcher"
 
 REG_KEY = r"Software\miHoYo\崩坏：星穹铁道"
@@ -610,6 +613,10 @@ class App(tk.Tk):
         self.geometry("680x580")
         self.minsize(560, 560)
         self.cfg = load_config()
+        # 首次运行即在程序目录创建存储文件
+        os.makedirs(PROFILE_DIR, exist_ok=True)
+        if not os.path.isfile(CONFIG_PATH):
+            save_config(self.cfg)
         self.busy = False
         self.current_name = None
         self.status = tk.StringVar()
@@ -791,7 +798,8 @@ class App(tk.Tk):
 
 def ensure_admin():
     """以管理员身份重启自身，这样关闭/启动游戏时不必反复弹 UAC。用户拒绝则以普通权限继续。"""
-    if is_admin() or "--no-elevate" in sys.argv:
+    # exe 在清单中声明了管理员权限（--uac-admin），由系统负责提权
+    if FROZEN or is_admin() or "--no-elevate" in sys.argv:
         return
     exe = sys.executable
     if exe.lower().endswith("python.exe"):

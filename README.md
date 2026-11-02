@@ -26,9 +26,11 @@ HKEY_CURRENT_USER\Software\miHoYo\崩坏：星穹铁道
 
 详细步骤和常见问题见 **[使用说明.md](使用说明.md)**。
 
-需要 Windows + Python 3（自带 tkinter，无第三方依赖）。
+**exe 版（无需 Python）**：下载 [`release/StarRailSwitch.zip`](release/StarRailSwitch.zip)，解压后双击 `StarRailSwitch.exe`。
 
-1. 下载本仓库，双击 `StarRailSwitch.pyw`（或 `启动.bat`）
+**源码版**：需要 Python 3（自带 tkinter，无第三方依赖）。
+
+1. 下载本仓库，双击 `StarRailSwitch.pyw`（或 `启动.bat`）；exe 版直接双击 `StarRailSwitch.exe`
 2. 首次打开会进入配置页，确认游戏路径（默认 `E:\Star Rail\Game\StarRail.exe`，可点「浏览…」修改）
 3. 在游戏里登录某个账号 → 点「保存当前登录」并命名；换号登录后重复
 4. 回到启动页，双击账号卡片即可切换
@@ -42,7 +44,16 @@ HKEY_CURRENT_USER\Software\miHoYo\崩坏：星穹铁道
 | `profiles\*.json` | 账号快照，**含登录凭据，请勿分享或上传** |
 | `config.json` | 游戏路径、主题 |
 
-均位于程序所在目录，已在 `.gitignore` 中排除。
+均位于程序（exe 或 .pyw）所在目录，首次启动自动创建，已在 `.gitignore` 中排除。
+
+## 自行打包
+
+```bash
+py -3 -m pip install pyinstaller
+py -3 -m PyInstaller --onefile --windowed --uac-admin --name StarRailSwitch --icon logo.ico --add-data "logo.ico;." StarRailSwitch.pyw
+```
+
+生成的 exe 位于 `dist\`。
 
 ## 声明
 
