@@ -248,7 +248,7 @@ def relative_time(ts):
 
 def load_config():
     cfg = {"game_path": DEFAULT_GAME_PATH, "theme": DEFAULT_THEME,
-           "launcher_path": "", "launcher_args": DEFAULT_LAUNCHER_ARGS}
+           "launcher_path": "", "launcher_args": DEFAULT_LAUNCHER_ARGS, "order": []}
     try:
         with open(CONFIG_PATH, encoding="utf-8") as f:
             cfg.update(json.load(f))
@@ -281,6 +281,7 @@ def setup_style(root):
     s.configure("TButton", background=SURFACE, foreground=TEXT, borderwidth=0, padding=(12, 6), focuscolor=SURFACE)
     s.map("TButton", background=[("pressed", BORDER), ("active", SURFACE_HOVER)],
           foreground=[("disabled", MUTED)])
+    s.configure("Arrow.TButton", font=(FONT, 12), padding=(6, 10))
     s.configure("Launcher.TButton", background=ACCENT, foreground="#1b1d29", font=(FONT, 11, "bold"),
                 padding=(14, 6))
     s.map("Launcher.TButton", background=[("disabled", SURFACE), ("pressed", ACCENT_DARK), ("active", ACCENT_DARK)],
@@ -371,11 +372,12 @@ def confirm(parent, title, message, ok_text="确定"):
 class AccountCard(tk.Frame):
     """启动页中的单个账号卡片"""
 
-    def __init__(self, master, name, last_login, current, on_activate):
+    def __init__(self, master, name, last_login, current, on_activate, on_select):
         super().__init__(master, bg=SURFACE, cursor="hand2", highlightthickness=1,
                          highlightbackground=BORDER, highlightcolor=BORDER)
         self.name = name
         self.last_login = last_login
+        self.selected = False
         self._widgets = [self]
 
         strip = tk.Frame(self, bg=ACCENT if current else SURFACE, width=5)
@@ -401,12 +403,19 @@ class AccountCard(tk.Frame):
         for w in self._widgets:
             w.bind("<Enter>", lambda e: self._set_bg(SURFACE_HOVER))
             w.bind("<Leave>", self._on_leave)
+            w.bind("<Button-1>", lambda e: on_select(self.name))
             w.bind("<Double-1>", lambda e: on_activate(self.name))
+
+    def set_selected(self, selected):
+        self.selected = selected
+        color = ACCENT_TEXT if selected else BORDER
+        self.configure(highlightbackground=color, highlightcolor=color)
+        self._set_bg(SURFACE_HOVER if selected else SURFACE)
 
     def _on_leave(self, event):
         # 在子控件之间移动时不要闪烁
         x, y = self.winfo_pointerxy()
-        if self.winfo_containing(x, y) not in self._widgets:
+        if self.winfo_containing(x, y) not in self._widgets and not self.selected:
             self._set_bg(SURFACE)
 
     def _set_bg(self, color):
@@ -422,6 +431,15 @@ class LaunchPage(ttk.Frame):
         super().__init__(master)
         self.app = app
         self.cards = []
+        self.selected_name = None
+
+        # 右侧上下箭头：调整选中账号的位置
+        arrows = ttk.Frame(self)
+        arrows.pack(side="right", padx=(0, 12))
+        self.up_btn = ttk.Button(arrows, text="▲", style="Arrow.TButton", width=3, command=lambda: self.move(-1))
+        self.up_btn.pack(pady=(0, 6))
+        self.down_btn = ttk.Button(arrows, text="▼", style="Arrow.TButton", width=3, command=lambda: self.move(1))
+        self.down_btn.pack()
 
         self.canvas = tk.Canvas(self, bg=BG, highlightthickness=0, bd=0)
         self.canvas.pack(side="left", fill="both", expand=True)
@@ -444,27 +462,44 @@ class LaunchPage(ttk.Frame):
         for w in self.inner.winfo_children():
             w.destroy()
 
-        names = list_profiles(include_backup=False)
+        names = self.app.ordered_names()
         if not names:
             tk.Label(self.inner, text="还没有保存任何账号\n点击右上角「配置」添加",
                      bg=BG, fg=MUTED, font=(FONT, 13), justify="center").pack(pady=60)
+            self.selected_name = None
+            self._update_arrows()
             return
 
-        profiles = []
         for n in names:
             try:
-                profiles.append(load_profile(n))
+                p = load_profile(n)
             except (OSError, ValueError, KeyError):
                 continue
-        # 最近登录的排前面
-        profiles.sort(key=lambda p: p.get("last_login") or "", reverse=True)
-        for p in profiles:
-            card = AccountCard(self.inner, p["name"], p["last_login"], p["name"] == current_name, self.app.activate)
-            card.pack(fill="x", padx=16, pady=6)
+            card = AccountCard(self.inner, n, p["last_login"], n == current_name, self.app.activate, self.select)
+            card.pack(fill="x", padx=(16, 4), pady=6)
             self.cards.append(card)
+        if self.selected_name not in names:
+            self.selected_name = None
+        self.select(self.selected_name)
 
-        tk.Label(self.inner, text="双击账号：关闭游戏 → 切换账号 → 重新启动",
+        tk.Label(self.inner, text="单击选中后可用右侧箭头调整顺序 · 双击：关闭游戏 → 切换账号 → 重新启动",
                  bg=BG, fg=MUTED, font=(FONT, 9)).pack(pady=(10, 4))
+
+    def select(self, name):
+        self.selected_name = name
+        for c in self.cards:
+            c.set_selected(c.name == name)
+        self._update_arrows()
+
+    def _update_arrows(self):
+        names = [c.name for c in self.cards]
+        i = names.index(self.selected_name) if self.selected_name in names else -1
+        self.up_btn.state(["!disabled"] if i > 0 else ["disabled"])
+        self.down_btn.state(["!disabled"] if 0 <= i < len(names) - 1 else ["disabled"])
+
+    def move(self, delta):
+        if self.selected_name:
+            self.app.move_account(self.selected_name, delta)
 
     def update_times(self):
         for c in self.cards:
@@ -506,15 +541,27 @@ class ConfigPage(ttk.Frame):
             ttk.Radiobutton(theme_row, text=t["label"], value=key, variable=self.theme_var,
                             command=lambda: app.set_theme(self.theme_var.get())).pack(side="left")
 
-        ttk.Label(self, text="账号快照", style="Section.TLabel").pack(anchor="w")
-        ttk.Label(self, text="保存方法：在游戏里登录要保存的账号 → 点「保存当前登录」",
-                  style="Muted.TLabel").pack(anchor="w", pady=(2, 6))
+        title_row = ttk.Frame(self)
+        title_row.pack(fill="x")
+        ttk.Label(title_row, text="账号快照", style="Section.TLabel").pack(side="left")
+        ttk.Label(title_row, text="保存方法：在游戏里登录要保存的账号 → 点「保存当前登录」",
+                  style="Muted.TLabel").pack(side="left", padx=(12, 0))
+
+        actions = ttk.Frame(self)
+        actions.pack(fill="x", pady=(8, 8))
+        for text, cmd, style in [
+            ("保存当前登录", self.save_current, "Accent.TButton"),
+            ("用当前登录更新", self.overwrite, "TButton"),
+            ("仅切换（不启动）", self.switch_only, "TButton"),
+            ("打开快照目录", self.open_dir, "TButton"),
+        ]:
+            ttk.Button(actions, text=text, command=cmd, style=style).pack(side="left", padx=(0, 8))
 
         mid = ttk.Frame(self)
         mid.pack(fill="both", expand=True)
 
         cols = ("name", "saved_at", "last_login")
-        self.tree = ttk.Treeview(mid, columns=cols, show="headings", selectmode="browse")
+        self.tree = ttk.Treeview(mid, columns=cols, show="headings", selectmode="browse", height=5)
         for col, text, width, anchor in [("name", "名称", 130, "w"), ("saved_at", "保存时间", 165, "center"),
                                          ("last_login", "上次启动", 95, "center")]:
             self.tree.heading(col, text=text)
@@ -526,24 +573,15 @@ class ConfigPage(ttk.Frame):
 
         side = ttk.Frame(mid)
         side.pack(side="left", fill="y", padx=(12, 0))
-        buttons = [
-            ("保存当前登录", self.save_current, "Accent.TButton"),
-            ("用当前登录更新", self.overwrite, "TButton"),
-            ("重命名", self.rename, "TButton"),
-            ("删除", self.delete, "Danger.TButton"),
-            None,
-            ("仅切换（不启动）", self.switch_only, "TButton"),
-            ("打开快照目录", self.open_dir, "TButton"),
-        ]
-        for b in buttons:
-            if b is None:
-                ttk.Frame(side, height=14).pack()
-            else:
-                ttk.Button(side, text=b[0], command=b[1], style=b[2], width=16).pack(fill="x", pady=3)
+        ttk.Button(side, text="重命名", command=self.rename, width=8).pack(fill="x", pady=(0, 6))
+        ttk.Button(side, text="删除", command=self.delete, style="Danger.TButton", width=8).pack(fill="x")
 
     def refresh(self, current_name):
         self.tree.delete(*self.tree.get_children())
-        for name in list_profiles():
+        names = self.app.ordered_names()
+        if AUTO_BACKUP_NAME in list_profiles():
+            names.append(AUTO_BACKUP_NAME)
+        for name in names:
             try:
                 p = load_profile(name)
             except (OSError, ValueError, KeyError):
@@ -651,6 +689,7 @@ class ConfigPage(ttk.Frame):
             messagebox.showerror(APP_TITLE, f"【{new}】已存在", parent=self)
             return
         save_profile(new, p["values"], p.get("saved_at"), p["last_login"])
+        self.app.rename_in_order(name, new)
         os.remove(profile_path(name))
         self.app.refresh()
 
@@ -680,8 +719,7 @@ class App(tk.Tk):
         self.title(APP_TITLE)
         if os.path.isfile(ICON_PATH):
             self.iconbitmap(default=ICON_PATH)  # default= 让对话框等子窗口也使用该图标
-        self.geometry("680x700")
-        self.minsize(560, 680)
+        self.minsize(560, 360)
         set_window_icon(self)
         self.cfg = load_config()
         # 首次运行即在程序目录创建存储文件
@@ -694,6 +732,7 @@ class App(tk.Tk):
         self.bind_all("<MouseWheel>", lambda e: self.launch_page.on_wheel(e))
 
         self._build_ui()
+        self.fit_height()
         self.show_page("config" if not list_profiles(include_backup=False) else "launch")
         self.after(30_000, self._tick)
         if not is_admin():
@@ -703,7 +742,7 @@ class App(tk.Tk):
         apply_theme(self.cfg["theme"])
         setup_style(self)
 
-        header = ttk.Frame(self, padding=(18, 12, 12, 8))
+        self.header = header = ttk.Frame(self, padding=(18, 12, 12, 8))
         header.pack(fill="x")
         self.title_lbl = ttk.Label(header, text="✦ 星穹铁道 · 账号切换", style="Title.TLabel")
         self.launcher_btn = ttk.Button(header, text="▶  官方启动器", style="Launcher.TButton",
@@ -712,7 +751,8 @@ class App(tk.Tk):
         self.toggle_btn.pack(side="right")
         tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
 
-        ttk.Label(self, textvariable=self.status, style="Status.TLabel", anchor="w").pack(fill="x", side="bottom")
+        self.status_lbl = ttk.Label(self, textvariable=self.status, style="Status.TLabel", anchor="w")
+        self.status_lbl.pack(fill="x", side="bottom")
 
         self.container = ttk.Frame(self, padding=(0, 8, 0, 0))
         self.container.pack(fill="both", expand=True)
@@ -734,6 +774,61 @@ class App(tk.Tk):
         self.show_page("config")
         self.set_status(status)
 
+    # ----- 窗口尺寸 -----
+
+    def _chrome_height(self):
+        """标题栏与状态栏等页面之外部分的高度"""
+        return self.header.winfo_reqheight() + 1 + 8 + self.status_lbl.winfo_reqheight()
+
+    def fit_height(self):
+        """按启动页账号数设置窗口高度：至少容纳 4 个账号，账号更多时全部显示（不超过屏幕）。"""
+        self.update_idletasks()
+        cards = self.launch_page.cards
+        if cards:
+            card_h = cards[0].winfo_reqheight()
+        else:
+            tmp = AccountCard(self.launch_page.inner, "账号", None, False, lambda n: None, lambda n: None)
+            card_h = tmp.winfo_reqheight()
+            tmp.destroy()
+        hint_h = 40  # 底部提示文字及间距
+        content = max(len(cards), 4) * (card_h + 12) + hint_h + 8
+        height = min(self._chrome_height() + content, self.winfo_screenheight() - 100)
+        self._height = height
+        self.geometry(f"680x{height}")
+
+    def _ensure_config_fits(self):
+        self.update_idletasks()
+        need = self._chrome_height() + self.config_page.winfo_reqheight()
+        cur = self.winfo_height() if self.winfo_ismapped() else self._height
+        if cur < need:
+            width = self.winfo_width() if self.winfo_ismapped() else 680
+            self._height = min(need, self.winfo_screenheight() - 100)
+            self.geometry(f"{width}x{self._height}")
+
+    # ----- 账号顺序 -----
+
+    def ordered_names(self):
+        """启动页/配置页使用的账号顺序：按配置中保存的顺序，新账号排在最后。"""
+        names = list_profiles(include_backup=False)
+        order = [n for n in self.cfg.get("order", []) if n in names]
+        return order + [n for n in names if n not in order]
+
+    def move_account(self, name, delta):
+        names = self.ordered_names()
+        i = names.index(name)
+        j = i + delta
+        if not 0 <= j < len(names):
+            return
+        names[i], names[j] = names[j], names[i]
+        self.cfg["order"] = names
+        save_config(self.cfg)
+        self.launch_page.refresh(self.current_name)
+        self.config_page.refresh(self.current_name)
+
+    def rename_in_order(self, old, new):
+        self.cfg["order"] = [new if n == old else n for n in self.ordered_names()]
+        save_config(self.cfg)
+
     # ----- 页面 -----
 
     def show_page(self, page):
@@ -751,6 +846,7 @@ class App(tk.Tk):
         else:
             self.title_lbl.pack(side="left")
             self.config_page.pack(fill="both", expand=True)
+            self._ensure_config_fits()
             self.toggle_btn.configure(text="←  返回")
 
     def toggle_page(self):
