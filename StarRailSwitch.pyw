@@ -410,7 +410,9 @@ class AccountCard(tk.Canvas):
     不经过布局计算，避免标签控件“先按旧宽度显示一部分、再刷新”的闪动。
     """
 
-    PAD_X, PAD_Y, STRIP_W = 18, 14, 5
+    PAD_X, PAD_Y = 18, 14
+    TEXT_X = 23      # 账号名起始位置，固定不随竖条宽度变化
+    STRIP_W = 12.5   # 左侧最近登录竖条宽度
 
     def __init__(self, master, name, note, last_login, current, on_activate, on_move=None,
                  can_up=False, can_down=False):
@@ -428,7 +430,7 @@ class AccountCard(tk.Canvas):
 
         cy = height / 2
         self.strip = self.create_rectangle(0, 0, self.STRIP_W, height + 2, width=0, fill=ACCENT, state="hidden")
-        self.title = self.create_text(self.STRIP_W + self.PAD_X, cy, anchor="w", font=self.f_title, fill=TEXT)
+        self.title = self.create_text(self.TEXT_X, cy, anchor="w", font=self.f_title, fill=TEXT)
         self.tag = self.create_text(0, cy + 3, anchor="w", font=self.f_tag, fill=ACCENT_TEXT, text="当前",
                                     state="hidden")
         self.note_item = self.create_text(0, cy + 2, anchor="w", font=self.f_note, fill=MUTED)
@@ -461,7 +463,7 @@ class AccountCard(tk.Canvas):
             x -= arrow_w + 16
         self.coords(self.time, x, self.coords(self.time)[1])
         time_left = x - self.f_time.measure(self.itemcget(self.time, "text"))
-        title_right = self.STRIP_W + self.PAD_X + self.f_title.measure(self.itemcget(self.title, "text"))
+        title_right = self.TEXT_X + self.f_title.measure(self.itemcget(self.title, "text"))
         self.coords(self.tag, title_right + 10, self.coords(self.tag)[1])
         note_x = title_right + 14
         if self.itemcget(self.tag, "state") == "normal":
