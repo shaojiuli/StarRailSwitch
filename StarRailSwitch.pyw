@@ -194,10 +194,11 @@ def now_str():
     return time.strftime(TIME_FMT)
 
 
-def save_profile(name, values, saved_at=None, last_login=None):
+def save_profile(name, values, saved_at=None, last_login=None, note=""):
     os.makedirs(PROFILE_DIR, exist_ok=True)
     data = {
         "name": name,
+        "note": note,
         "saved_at": saved_at or now_str(),
         "last_login": last_login,
         "values": {k: base64.b64encode(v).decode() for k, v in values.items()},
@@ -219,13 +220,19 @@ def load_profile(name):
         data = json.load(f)
     data["values"] = {k: base64.b64decode(v) for k, v in data["values"].items()}
     data.setdefault("last_login", None)
+    data["note"] = data.get("note") or ""
     _profile_cache[name] = (mtime, data)
     return dict(data)
 
 
 def touch_last_login(name):
     p = load_profile(name)
-    save_profile(name, p["values"], p.get("saved_at"), now_str())
+    save_profile(name, p["values"], p.get("saved_at"), now_str(), p["note"])
+
+
+def set_note(name, note):
+    p = load_profile(name)
+    save_profile(name, p["values"], p.get("saved_at"), p["last_login"], note)
 
 
 def list_profiles(include_backup=True):
@@ -235,6 +242,14 @@ def list_profiles(include_backup=True):
     if not include_backup:
         names = [n for n in names if n != AUTO_BACKUP_NAME]
     return sorted(names, key=lambda n: (n == AUTO_BACKUP_NAME, n))
+
+
+def short_time(ts):
+    """配置页列表里的保存时间只显示 月-日 时:分"""
+    try:
+        return datetime.strptime(ts, TIME_FMT).strftime("%m-%d %H:%M")
+    except ValueError:
+        return ts
 
 
 def valid_name(name):
@@ -397,9 +412,11 @@ class AccountCard(tk.Canvas):
 
     PAD_X, PAD_Y, STRIP_W = 18, 14, 5
 
-    def __init__(self, master, name, last_login, current, on_activate, on_move=None, can_up=False, can_down=False):
+    def __init__(self, master, name, note, last_login, current, on_activate, on_move=None,
+                 can_up=False, can_down=False):
         self.f_title = tkfont.Font(family=FONT, size=18, weight="bold")
         self.f_tag = tkfont.Font(family=FONT, size=10, weight="bold")
+        self.f_note = tkfont.Font(family=FONT, size=11)
         self.f_time = tkfont.Font(family=FONT, size=13)
         self.f_arrow = tkfont.Font(family=FONT, size=9)
         height = self.f_title.metrics("linespace") + 2 * self.PAD_Y
@@ -414,6 +431,7 @@ class AccountCard(tk.Canvas):
         self.title = self.create_text(self.STRIP_W + self.PAD_X, cy, anchor="w", font=self.f_title, fill=TEXT)
         self.tag = self.create_text(0, cy + 3, anchor="w", font=self.f_tag, fill=ACCENT_TEXT, text="当前",
                                     state="hidden")
+        self.note_item = self.create_text(0, cy + 2, anchor="w", font=self.f_note, fill=MUTED)
         self.time = self.create_text(0, cy, anchor="e", font=self.f_time, fill=MUTED)
         self.arrows = {}
         if on_move:
@@ -430,10 +448,10 @@ class AccountCard(tk.Canvas):
         self.bind("<Leave>", lambda e: self.configure(bg=SURFACE))
         # 箭头上的双击不触发切换
         self.bind("<Double-1>", lambda e: None if self._hover_arrow is not None else on_activate(self.name))
-        self.set_state(name, last_login, current, can_up, can_down)
+        self.set_state(name, note, last_login, current, can_up, can_down)
 
     def _layout(self):
-        """右侧元素按卡片宽度定位；账号名后面紧跟“当前”标签"""
+        """右侧元素按卡片宽度定位；账号名后面依次是“当前”标签和备注（过长时截断）"""
         w = self.winfo_width()
         x = w - self.PAD_X
         if self.arrows:
@@ -442,12 +460,30 @@ class AccountCard(tk.Canvas):
                 self.coords(item, x - arrow_w / 2, self.coords(item)[1])
             x -= arrow_w + 16
         self.coords(self.time, x, self.coords(self.time)[1])
+        time_left = x - self.f_time.measure(self.itemcget(self.time, "text"))
         title_right = self.STRIP_W + self.PAD_X + self.f_title.measure(self.itemcget(self.title, "text"))
         self.coords(self.tag, title_right + 10, self.coords(self.tag)[1])
+        note_x = title_right + 14
+        if self.itemcget(self.tag, "state") == "normal":
+            note_x += self.f_tag.measure("当前") + 10
+        self.coords(self.note_item, note_x, self.coords(self.note_item)[1])
+        self.itemconfigure(self.note_item, text=self._fit(self.note, self.f_note, time_left - 20 - note_x))
 
-    def set_state(self, name, last_login, current, can_up, can_down):
-        """原地更新卡片内容（含账号名），卡片位置固定不动"""
+    @staticmethod
+    def _fit(text, font, width):
+        """文字超出宽度时截断并加省略号"""
+        if width <= 0 or not text:
+            return ""
+        if font.measure(text) <= width:
+            return text
+        while text and font.measure(text + "…") > width:
+            text = text[:-1]
+        return text + "…" if text else ""
+
+    def set_state(self, name, note, last_login, current, can_up, can_down):
+        """原地更新卡片内容（含账号名、备注），卡片位置固定不动"""
         self.name = name
+        self.note = note
         self.last_login = last_login
         self.itemconfigure(self.title, text=name)
         state = "normal" if current else "hidden"
@@ -474,7 +510,10 @@ class AccountCard(tk.Canvas):
         self._paint_arrow(delta)
 
     def update_time(self):
-        self.itemconfigure(self.time, text=relative_time(self.last_login))
+        text = relative_time(self.last_login)
+        if text != self.itemcget(self.time, "text"):
+            self.itemconfigure(self.time, text=text)
+            self._layout()  # 时间宽度变化会影响备注可用宽度
 
 
 class LaunchPage(ttk.Frame):
@@ -519,7 +558,7 @@ class LaunchPage(ttk.Frame):
                 p = load_profile(n)
             except (OSError, ValueError, KeyError):
                 continue
-            card = AccountCard(self.inner, n, p["last_login"], n == current_name, self.app.activate,
+            card = AccountCard(self.inner, n, p["note"], p["last_login"], n == current_name, self.app.activate,
                                self.app.move_account, can_up=i > 0, can_down=i < len(names) - 1)
             card.pack(fill="x", padx=16, pady=6)
             self.cards.append(card)
@@ -533,10 +572,11 @@ class LaunchPage(ttk.Frame):
         只把每个位置上显示的账号内容换掉，避免重排或重建造成闪动"""
         for i, (card, n) in enumerate(zip(self.cards, names)):
             try:
-                last = load_profile(n)["last_login"]
+                p = load_profile(n)
+                note, last = p["note"], p["last_login"]
             except (OSError, ValueError, KeyError):
-                last = None
-            card.set_state(n, last, n == current_name, i > 0, i < len(names) - 1)
+                note, last = "", None
+            card.set_state(n, note, last, n == current_name, i > 0, i < len(names) - 1)
 
     def update_times(self):
         for c in self.cards:
@@ -594,18 +634,19 @@ class ConfigPage(ttk.Frame):
         ]:
             ttk.Button(actions, text=text, command=cmd, style=style).pack(side="left", padx=(0, 8))
 
-        # 账号列表：每行内含「重命名」「删除」按钮；单击行选中，供上方按钮使用
+        # 账号列表：单击行选中，供上方按钮使用；单击名称/备注单元格可直接编辑；每行右侧有「删除」
         self.selected_name = None
         self.rows = {}
+        self._editor = None
         box = tk.Frame(self, bg=SURFACE, highlightthickness=1, highlightbackground=BORDER, highlightcolor=BORDER)
         box.pack(fill="both", expand=True)
         head = tk.Frame(box, bg=SURFACE)
         head.pack(fill="x")
         self._grid_columns(head)
-        for col, text in enumerate(("名称", "保存时间", "上次启动", "操作")):
+        for col, text in enumerate(("名称", "备注", "保存时间", "上次启动", "操作")):
             tk.Label(head, text=text, bg=SURFACE, fg=MUTED, font=(FONT, 9),
-                     anchor="w" if col == 0 else "center").grid(row=0, column=col, sticky="ew",
-                                                                padx=(10, 4) if col == 0 else 4, pady=(6, 4))
+                     anchor="w" if col < 2 else "center").grid(row=0, column=col, sticky="ew",
+                                                               padx=(10, 4) if col == 0 else 4, pady=(6, 4))
         tk.Frame(box, bg=BORDER, height=1).pack(fill="x")
 
         self.canvas = tk.Canvas(box, bg=SURFACE, highlightthickness=0, bd=0, height=5 * ROW_HEIGHT)
@@ -621,8 +662,8 @@ class ConfigPage(ttk.Frame):
     def _grid_columns(frame):
         # 表头与每一行使用相同的固定列宽（按 DPI 缩放，需大于内容宽度），保证对齐
         scale = frame.winfo_fpixels("1i") / 96
-        frame.grid_columnconfigure(0, weight=1)
-        for col, width in ((1, 160), (2, 92), (3, 128)):
+        frame.grid_columnconfigure(1, weight=1)  # 备注列占用剩余宽度
+        for col, width in ((0, 120), (2, 92), (3, 76), (4, 56)):
             frame.grid_columnconfigure(col, minsize=int(width * scale))
 
     def on_wheel(self, event):
@@ -642,39 +683,85 @@ class ConfigPage(ttk.Frame):
         for name in names:
             try:
                 p = load_profile(name)
-                saved, last = p.get("saved_at", ""), relative_time(p["last_login"])
+                note, saved, last = p["note"], short_time(p.get("saved_at", "")), relative_time(p["last_login"])
             except (OSError, ValueError, KeyError):
-                saved, last = "（文件损坏）", ""
-            self._add_row(name, saved, last, name == current_name)
+                note, saved, last = "", "（文件损坏）", ""
+            self._add_row(name, note, saved, last, name == current_name)
         if self.selected_name not in self.rows:
             self.selected_name = None
         self.select(self.selected_name)
 
-    def _add_row(self, name, saved, last, current):
+    def _add_row(self, name, note, saved, last, current):
         row = tk.Frame(self.inner, bg=SURFACE, height=ROW_HEIGHT)
         row.pack(fill="x")
         row.grid_propagate(False)
         self._grid_columns(row)
         row.grid_rowconfigure(0, weight=1)
         fg = ACCENT_TEXT if current else TEXT
-        cells = [
-            tk.Label(row, text=("● " if current else "") + name, bg=SURFACE, fg=fg, font=(FONT, 10), anchor="w"),
-            tk.Label(row, text=saved, bg=SURFACE, fg=fg, font=(FONT, 10)),
-            tk.Label(row, text=last, bg=SURFACE, fg=fg, font=(FONT, 10)),
-        ]
+        editable = name != AUTO_BACKUP_NAME
+        name_cell = tk.Label(row, text=("● " if current else "") + name, bg=SURFACE, fg=fg, font=(FONT, 10),
+                             anchor="w", cursor="xterm" if editable else "")
+        note_cell = tk.Label(row, text=note or ("点击添加备注" if editable else ""), bg=SURFACE,
+                             fg=fg if note else THUMB, font=(FONT, 10), anchor="w", cursor="xterm" if editable else "")
+        cells = [name_cell, note_cell,
+                 tk.Label(row, text=saved, bg=SURFACE, fg=fg, font=(FONT, 10)),
+                 tk.Label(row, text=last, bg=SURFACE, fg=fg, font=(FONT, 10))]
         for col, cell in enumerate(cells):
             cell.grid(row=0, column=col, sticky="ew", padx=(10, 4) if col == 0 else 4)
         ops = tk.Frame(row, bg=SURFACE)
-        ops.grid(row=0, column=3)
-        for text, color, cmd in (("重命名", TEXT, self.rename), ("删除", DANGER, self.delete)):
-            btn = tk.Label(ops, text=text, bg=BG, fg=color, font=(FONT, 9), padx=10, pady=2, cursor="hand2")
-            btn.pack(side="left", padx=3)
-            btn.bind("<Button-1>", lambda e, c=cmd: c(name))
-            btn.bind("<Enter>", lambda e, b=btn: b.configure(bg=BORDER))
-            btn.bind("<Leave>", lambda e, b=btn: b.configure(bg=BG))
+        ops.grid(row=0, column=4)
+        btn = tk.Label(ops, text="删除", bg=BG, fg=DANGER, font=(FONT, 9), padx=10, pady=2, cursor="hand2")
+        btn.pack(padx=3)
+        btn.bind("<Button-1>", lambda e: self.delete(name))
+        btn.bind("<Enter>", lambda e: btn.configure(bg=BORDER))
+        btn.bind("<Leave>", lambda e: btn.configure(bg=BG))
         for w in [row, ops] + cells:
-            w.bind("<Button-1>", lambda e: self.select(name))
+            # 点击其他位置时先保存正在编辑的内容
+            w.bind("<Button-1>", lambda e: (self._close_editor(commit=True), self.select(name)))
+        if editable:
+            name_cell.bind("<Button-1>", lambda e: self._edit(name_cell, name, "name", name))
+            note_cell.bind("<Button-1>", lambda e: self._edit(note_cell, name, "note", note))
         self.rows[name] = [row, ops] + cells
+
+    def _edit(self, cell, name, field, value):
+        """在单元格上覆盖一个输入框进行编辑：回车或点别处保存，Esc 取消"""
+        self._close_editor(commit=True)
+        if not cell.winfo_exists():
+            # 上一个编辑保存后列表已重建，改用重建后的单元格
+            if name not in self.rows:
+                return
+            cell = self.rows[name][2 if field == "name" else 3]
+        self.select(name)
+        entry = tk.Entry(cell.master, font=(FONT, 10), bg=SURFACE, fg=TEXT, insertbackground=TEXT,
+                         relief="flat", highlightthickness=1, highlightbackground=ACCENT, highlightcolor=ACCENT)
+        entry.insert(0, value)
+        entry.place(in_=cell, x=-2, y=0, relwidth=1, relheight=1, width=4)
+        entry.focus_set()
+        entry.select_range(0, "end")
+        self._editor = (entry, name, field, value)
+        entry.bind("<Return>", lambda e: self._close_editor(commit=True))
+        entry.bind("<Escape>", lambda e: self._close_editor(commit=False))
+        entry.bind("<FocusOut>", lambda e: self._close_editor(commit=True))
+
+    def _close_editor(self, commit):
+        if not self._editor:
+            return
+        entry, name, field, old = self._editor
+        self._editor = None  # 先清空，防止销毁输入框触发的 FocusOut 重复提交
+        new = entry.get().strip()
+        entry.destroy()
+        if not commit or new == old:
+            return
+        if field == "name":
+            self.rename(name, new)
+        else:
+            try:
+                set_note(name, new)
+            except (OSError, ValueError, KeyError) as e:
+                messagebox.showerror(APP_TITLE, f"保存备注失败：{e}", parent=self)
+                return
+            self.app.refresh()
+            self.app.set_status(f"已更新【{name}】的备注")
 
     def select(self, name):
         self.selected_name = name
@@ -736,9 +823,13 @@ class ConfigPage(ttk.Frame):
         if os.path.exists(profile_path(name)) and not messagebox.askyesno(
                 APP_TITLE, f"【{name}】已存在，覆盖？", parent=self):
             return
-        save_profile(name, values, last_login=now_str())
+        try:
+            note = load_profile(name)["note"] if os.path.exists(profile_path(name)) else ""
+        except (OSError, ValueError, KeyError):
+            note = ""
+        save_profile(name, values, last_login=now_str(), note=note)
         self.app.refresh()
-        self.app.set_status(f"已保存账号【{name}】")
+        self.app.set_status(f"已保存账号【{name}】，可在列表中点击备注栏添加备注")
 
     def overwrite(self):
         name = self.selected()
@@ -751,35 +842,33 @@ class ConfigPage(ttk.Frame):
         if values is None:
             return
         try:
-            last = load_profile(name)["last_login"]
+            p = load_profile(name)
+            last, note = p["last_login"], p["note"]
         except (OSError, ValueError, KeyError):
-            last = None
-        save_profile(name, values, last_login=last or now_str())
+            last, note = None, ""
+        save_profile(name, values, last_login=last or now_str(), note=note)
         self.app.refresh()
         self.app.set_status(f"已更新【{name}】")
 
-    def rename(self, name):
+    def rename(self, name, new):
         try:
             p = load_profile(name)
         except (OSError, ValueError, KeyError) as e:
             messagebox.showerror(APP_TITLE, f"读取失败：{e}", parent=self)
             return
-        new = simpledialog.askstring(APP_TITLE, "新名称：", initialvalue=name, parent=self)
-        if new is None or new.strip() == name:
-            return
-        new = new.strip()
         if not valid_name(new) or new == AUTO_BACKUP_NAME:
             messagebox.showerror(APP_TITLE, "名称为空或包含非法字符", parent=self)
             return
         if os.path.exists(profile_path(new)):
             messagebox.showerror(APP_TITLE, f"【{new}】已存在", parent=self)
             return
-        save_profile(new, p["values"], p.get("saved_at"), p["last_login"])
+        save_profile(new, p["values"], p.get("saved_at"), p["last_login"], p["note"])
         self.app.rename_in_order(name, new)
         os.remove(profile_path(name))
         if self.selected_name == name:
             self.selected_name = new
         self.app.refresh()
+        self.app.set_status(f"已将【{name}】重命名为【{new}】")
 
     def delete(self, name):
         if confirm(self.app, "删除账号", f"确定要删除【{name}】吗？\n删除后该账号的登录快照无法恢复。", "删除"):
@@ -880,7 +969,7 @@ class App(tk.Tk):
         if cards:
             card_h = cards[0].winfo_reqheight()
         else:
-            tmp = AccountCard(self.launch_page.inner, "账号", None, False, lambda n: None)
+            tmp = AccountCard(self.launch_page.inner, "账号", "", None, False, lambda n: None)
             card_h = tmp.winfo_reqheight()
             tmp.destroy()
         hint_h = 40  # 底部提示文字及间距
@@ -946,6 +1035,8 @@ class App(tk.Tk):
             self.toggle_btn.configure(text="←  返回")
 
     def toggle_page(self):
+        if self.config_page:
+            self.config_page._close_editor(commit=True)
         self.game_path()
         self.save_launcher()
         self.show_page("config" if self.page == "launch" else "launch")
