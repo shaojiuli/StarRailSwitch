@@ -154,17 +154,23 @@ def set_window_icon(win):
         user32.LoadImageW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint,
                                       ctypes.c_int, ctypes.c_int, ctypes.c_uint]
         user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
+        user32.SetClassLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+        user32.SetClassLongPtrW.restype = ctypes.c_void_p
         win.update_idletasks()
         hwnd = int(win.wm_frame(), 16)
         dpi = user32.GetDpiForWindow(hwnd) or 96
         IMAGE_ICON, LR_LOADFROMFILE, WM_SETICON = 1, 0x10, 0x80
+        GCLP_HICON, GCLP_HICONSM = -14, -34
         # 小图标按任务栏尺寸（24 逻辑像素，125% 缩放时 30px）加载：任务栏取小图标并放大显示，
         # 若按标题栏的 16 逻辑像素提供会被放大而模糊；标题栏则由系统缩小显示，仍然清晰
-        for which, base in ((1, 32), (0, 24)):  # ICON_BIG, ICON_SMALL
+        for which, cls_index, base in ((1, GCLP_HICON, 32), (0, GCLP_HICONSM, 24)):  # ICON_BIG, ICON_SMALL
             size = round(base * dpi / 96)
             h = user32.LoadImageW(None, ICON_PATH, IMAGE_ICON, size, size, LR_LOADFROMFILE)
             if h:
                 user32.SendMessageW(hwnd, WM_SETICON, which, h)
+                # 程序以管理员权限运行时，任务栏（普通权限）发不了 WM_GETICON，只能读窗口类图标，
+                # 因此类图标也要换成同样尺寸的图标，否则会退回 Tk 默认的小图标
+                user32.SetClassLongPtrW(hwnd, cls_index, h)
     except (AttributeError, OSError, ValueError, tk.TclError):
         pass
 
