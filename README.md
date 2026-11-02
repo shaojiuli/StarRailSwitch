@@ -24,6 +24,8 @@ HKEY_CURRENT_USER\Software\miHoYo\崩坏：星穹铁道
 
 ## 使用
 
+详细步骤和常见问题见 **[使用说明.md](使用说明.md)**。
+
 需要 Windows + Python 3（自带 tkinter，无第三方依赖）。
 
 1. 下载本仓库，双击 `StarRailSwitch.pyw`（或 `启动.bat`）
