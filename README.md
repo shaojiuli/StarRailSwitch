@@ -6,6 +6,7 @@
 
 - **启动页**：大字号账号卡片，显示上次启动时间（刚刚 / N 分钟前 / N 小时前 / 昨天 / 月日），双击卡片自动 **关闭游戏 → 切换账号 → 重新启动**
 - **配置页**：保存当前登录、用当前登录更新（令牌过期后重新登录再保存）、重命名、删除、仅切换不启动
+- 启动页左上角「▶ 官方启动器」按钮，一键打开米哈游启动器（需在配置页填写路径，用于更新游戏）
 - 切换前若当前登录状态未保存，会自动备份为 `_切换前自动备份`
 - 浅色 / 深色主题
 
@@ -26,7 +27,7 @@ HKEY_CURRENT_USER\Software\miHoYo\崩坏：星穹铁道
 
 详细步骤和常见问题见 **[使用说明.md](使用说明.md)**。
 
-**exe 版（无需 Python）**：下载 [`release/StarRailSwitch.zip`](release/StarRailSwitch.zip)，解压后双击 `StarRailSwitch.exe`。
+**exe 版（无需 Python）**：到 [Releases](https://github.com/shaojiuli/StarRailSwitch/releases) 下载最新的 `StarRailSwitch.zip`，解压后双击 `StarRailSwitch.exe`。
 
 **源码版**：需要 Python 3（自带 tkinter，无第三方依赖）。
 

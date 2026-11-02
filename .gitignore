@@ -8,7 +8,8 @@ config.json
 # 图标原图（程序只用 logo.ico）
 logo.jpg
 
-# 打包产物
+# 打包产物（exe 压缩包发布到 GitHub Releases，不入库）
+release/
 build/
 dist/
 *.spec

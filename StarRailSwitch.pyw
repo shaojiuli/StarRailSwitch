@@ -32,6 +32,7 @@ REG_KEY = r"Software\miHoYo\崩坏：星穹铁道"
 REG_VALUES = ["MIHOYOSDK_ADL_PROD_CN_h3123967166"]
 PROCESS_NAME = "StarRail.exe"
 DEFAULT_GAME_PATH = r"E:\Star Rail\Game\StarRail.exe"
+DEFAULT_LAUNCHER_ARGS = "--game=hkrpg_cn"  # 米哈游启动器直接打开星穹铁道页面
 AUTO_BACKUP_NAME = "_切换前自动备份"
 TIME_FMT = "%Y-%m-%d %H:%M:%S"
 KILL_TIMEOUT = 15  # 秒
@@ -117,6 +118,22 @@ def kill_game():
         ret = ctypes.windll.shell32.ShellExecuteW(None, "runas", "taskkill.exe", f"/F /IM {PROCESS_NAME}", None, 0)
         if ret <= 32:
             raise RuntimeError("无法结束游戏进程（可能取消了 UAC 授权）")
+
+
+def split_command(path, args):
+    """路径框里粘贴了完整命令（"C:\\...\\launcher.exe" --game=xx）时，拆成程序路径和参数。"""
+    path = path.strip()
+    if path.startswith('"') and '"' in path[1:]:
+        end = path.index('"', 1)
+        path, extra = path[1:end], path[end + 1:].strip()
+        args = (extra + " " + args).strip() if extra and extra not in args else args
+    return path, args.strip()
+
+
+def launch_launcher(path, args):
+    ret = ctypes.windll.shell32.ShellExecuteW(None, "open", path, args or None, os.path.dirname(path), 1)
+    if ret <= 32:
+        raise RuntimeError(f"启动器打开失败（ShellExecute 返回 {ret}）")
 
 
 def launch_game(path):
@@ -207,7 +224,8 @@ def relative_time(ts):
 # ---------- 配置 ----------
 
 def load_config():
-    cfg = {"game_path": DEFAULT_GAME_PATH, "theme": DEFAULT_THEME}
+    cfg = {"game_path": DEFAULT_GAME_PATH, "theme": DEFAULT_THEME,
+           "launcher_path": "", "launcher_args": DEFAULT_LAUNCHER_ARGS}
     try:
         with open(CONFIG_PATH, encoding="utf-8") as f:
             cfg.update(json.load(f))
@@ -238,7 +256,12 @@ def setup_style(root):
     s.configure("Status.TLabel", background=SURFACE, foreground=MUTED, padding=(12, 5))
 
     s.configure("TButton", background=SURFACE, foreground=TEXT, borderwidth=0, padding=(12, 6), focuscolor=SURFACE)
-    s.map("TButton", background=[("pressed", BORDER), ("active", SURFACE_HOVER)])
+    s.map("TButton", background=[("pressed", BORDER), ("active", SURFACE_HOVER)],
+          foreground=[("disabled", MUTED)])
+    s.configure("Launcher.TButton", background=ACCENT, foreground="#1b1d29", font=(FONT, 11, "bold"),
+                padding=(14, 6))
+    s.map("Launcher.TButton", background=[("disabled", SURFACE), ("pressed", ACCENT_DARK), ("active", ACCENT_DARK)],
+          foreground=[("disabled", MUTED)])
     s.configure("Accent.TButton", background=ACCENT, foreground="#1b1d29", font=(FONT, 10, "bold"))
     s.map("Accent.TButton", background=[("pressed", ACCENT_DARK), ("active", ACCENT_DARK)])
     s.configure("Danger.TButton", foreground=DANGER)
@@ -438,6 +461,19 @@ class ConfigPage(ttk.Frame):
         entry.bind("<FocusOut>", lambda e: app.game_path())
         ttk.Button(row, text="浏览…", command=self.browse).pack(side="left", padx=(8, 0))
 
+        ttk.Label(self, text="官方启动器（路径 / 启动参数，可留空）", style="Section.TLabel").pack(anchor="w")
+        row = ttk.Frame(self)
+        row.pack(fill="x", pady=(4, 14))
+        self.launcher_var = tk.StringVar(value=app.cfg["launcher_path"])
+        self.launcher_args_var = tk.StringVar(value=app.cfg["launcher_args"])
+        entry = ttk.Entry(row, textvariable=self.launcher_var)
+        entry.pack(side="left", fill="x", expand=True)
+        entry.bind("<FocusOut>", lambda e: app.save_launcher())
+        args_entry = ttk.Entry(row, textvariable=self.launcher_args_var, width=16)
+        args_entry.pack(side="left", padx=(8, 0))
+        args_entry.bind("<FocusOut>", lambda e: app.save_launcher())
+        ttk.Button(row, text="浏览…", command=self.browse_launcher).pack(side="left", padx=(8, 0))
+
         theme_row = ttk.Frame(self)
         theme_row.pack(fill="x", pady=(0, 14))
         ttk.Label(theme_row, text="主题", style="Section.TLabel").pack(side="left", padx=(0, 16))
@@ -509,6 +545,16 @@ class ConfigPage(ttk.Frame):
         if path:
             self.path_var.set(os.path.normpath(path))
             self.app.game_path()
+
+    def browse_launcher(self):
+        current = split_command(self.launcher_var.get(), "")[0]
+        path = filedialog.askopenfilename(
+            title="选择官方启动器 launcher.exe", filetypes=[("launcher.exe", "launcher.exe"), ("可执行文件", "*.exe")],
+            initialdir=os.path.dirname(current) or r"C:\Program Files\miHoYo Launcher", parent=self,
+        )
+        if path:
+            self.launcher_var.set(os.path.normpath(path))
+            self.app.save_launcher()
 
     def open_dir(self):
         os.makedirs(PROFILE_DIR, exist_ok=True)
@@ -610,8 +656,8 @@ class App(tk.Tk):
         self.title(APP_TITLE)
         if os.path.isfile(ICON_PATH):
             self.iconbitmap(default=ICON_PATH)  # default= 让对话框等子窗口也使用该图标
-        self.geometry("680x580")
-        self.minsize(560, 560)
+        self.geometry("680x700")
+        self.minsize(560, 680)
         self.cfg = load_config()
         # 首次运行即在程序目录创建存储文件
         os.makedirs(PROFILE_DIR, exist_ok=True)
@@ -634,7 +680,9 @@ class App(tk.Tk):
 
         header = ttk.Frame(self, padding=(18, 12, 12, 8))
         header.pack(fill="x")
-        ttk.Label(header, text="✦ 星穹铁道 · 账号切换", style="Title.TLabel").pack(side="left")
+        self.title_lbl = ttk.Label(header, text="✦ 星穹铁道 · 账号切换", style="Title.TLabel")
+        self.launcher_btn = ttk.Button(header, text="▶  官方启动器", style="Launcher.TButton",
+                                       command=self.open_launcher)
         self.toggle_btn = ttk.Button(header, style="Header.TButton", command=self.toggle_page)
         self.toggle_btn.pack(side="right")
         tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
@@ -651,6 +699,7 @@ class App(tk.Tk):
         if name == self.cfg["theme"] or name not in THEMES:
             return
         self.game_path()
+        self.save_launcher()
         self.cfg["theme"] = name
         save_config(self.cfg)
         status = self.status.get()
@@ -666,16 +715,44 @@ class App(tk.Tk):
         self.page = page
         self.launch_page.pack_forget()
         self.config_page.pack_forget()
+        self.title_lbl.pack_forget()
+        self.launcher_btn.pack_forget()
         if page == "launch":
+            # 启动页标题位置放官方启动器按钮，未填写路径时不可点
+            self.launcher_btn.state(["!disabled"] if self.cfg["launcher_path"] else ["disabled"])
+            self.launcher_btn.pack(side="left")
             self.launch_page.pack(fill="both", expand=True)
             self.toggle_btn.configure(text="⚙  配置")
         else:
+            self.title_lbl.pack(side="left")
             self.config_page.pack(fill="both", expand=True)
             self.toggle_btn.configure(text="←  返回")
 
     def toggle_page(self):
         self.game_path()
+        self.save_launcher()
         self.show_page("config" if self.page == "launch" else "launch")
+
+    def save_launcher(self):
+        path, args = split_command(self.config_page.launcher_var.get(), self.config_page.launcher_args_var.get())
+        self.config_page.launcher_var.set(path)
+        self.config_page.launcher_args_var.set(args)
+        if (path, args) != (self.cfg["launcher_path"], self.cfg["launcher_args"]):
+            self.cfg["launcher_path"], self.cfg["launcher_args"] = path, args
+            save_config(self.cfg)
+
+    def open_launcher(self):
+        path = self.cfg["launcher_path"]
+        if not path:
+            return
+        if not os.path.isfile(path):
+            messagebox.showerror(APP_TITLE, f"找不到官方启动器：\n{path}\n请在「配置」中重新选择", parent=self)
+            return
+        try:
+            launch_launcher(path, self.cfg["launcher_args"])
+            self.set_status("已打开官方启动器")
+        except RuntimeError as e:
+            messagebox.showerror(APP_TITLE, str(e), parent=self)
 
     def _tick(self):
         self.launch_page.update_times()
