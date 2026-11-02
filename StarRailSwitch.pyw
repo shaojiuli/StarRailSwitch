@@ -158,7 +158,9 @@ def set_window_icon(win):
         hwnd = int(win.wm_frame(), 16)
         dpi = user32.GetDpiForWindow(hwnd) or 96
         IMAGE_ICON, LR_LOADFROMFILE, WM_SETICON = 1, 0x10, 0x80
-        for which, base in ((1, 32), (0, 16)):  # ICON_BIG, ICON_SMALL
+        # 小图标按任务栏尺寸（24 逻辑像素，125% 缩放时 30px）加载：任务栏取小图标并放大显示，
+        # 若按标题栏的 16 逻辑像素提供会被放大而模糊；标题栏则由系统缩小显示，仍然清晰
+        for which, base in ((1, 32), (0, 24)):  # ICON_BIG, ICON_SMALL
             size = round(base * dpi / 96)
             h = user32.LoadImageW(None, ICON_PATH, IMAGE_ICON, size, size, LR_LOADFROMFILE)
             if h:
