@@ -17,6 +17,7 @@ import tkinter as tk
 import winreg
 from datetime import datetime, timedelta
 from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import font as tkfont
 
 APP_TITLE = "星穹铁道账号切换"
 FROZEN = getattr(sys, "frozen", False)  # 是否为 PyInstaller 打包的 exe
@@ -377,102 +378,93 @@ def confirm(parent, title, message, ok_text="确定"):
     return result["ok"]
 
 
-def _set_if_changed(widget, **options):
-    """只修改真正变化的选项，避免无谓的重绘"""
-    changed = {k: v for k, v in options.items() if str(widget.cget(k)) != str(v)}
-    if changed:
-        widget.configure(**changed)
+class AccountCard(tk.Canvas):
+    """启动页中的单个账号卡片。
 
+    整张卡片用 Canvas 直接绘制文字：修改账号名/时间时立即按新内容重画，
+    不经过布局计算，避免标签控件“先按旧宽度显示一部分、再刷新”的闪动。
+    """
 
-class AccountCard(tk.Frame):
-    """启动页中的单个账号卡片"""
+    PAD_X, PAD_Y, STRIP_W = 18, 14, 5
 
     def __init__(self, master, name, last_login, current, on_activate, on_move=None, can_up=False, can_down=False):
-        super().__init__(master, bg=SURFACE, cursor="hand2", highlightthickness=1,
-                         highlightbackground=BORDER, highlightcolor=BORDER)
+        self.f_title = tkfont.Font(family=FONT, size=18, weight="bold")
+        self.f_tag = tkfont.Font(family=FONT, size=10, weight="bold")
+        self.f_time = tkfont.Font(family=FONT, size=13)
+        self.f_arrow = tkfont.Font(family=FONT, size=9)
+        height = self.f_title.metrics("linespace") + 2 * self.PAD_Y
+        super().__init__(master, bg=SURFACE, height=height, cursor="hand2", highlightthickness=1,
+                         highlightbackground=BORDER, highlightcolor=BORDER, bd=0)
         self.name = name
-        self._widgets = [self]
         self._on_move = on_move
+        self._hover_arrow = None
 
-        self.strip = tk.Frame(self, bg=SURFACE, width=5)
-        self.strip.pack(side="left", fill="y")
-
-        body = tk.Frame(self, bg=SURFACE, padx=18, pady=14)
-        body.pack(side="left", fill="both", expand=True)
-        self._widgets.append(body)
-
-        self.title = tk.Label(body, text=name, bg=SURFACE, fg=TEXT, font=(FONT, 18, "bold"), anchor="w")
-        self.title.pack(side="left")
-        self._widgets.append(self.title)
-        self.tag = tk.Label(body, bg=SURFACE, fg=ACCENT_TEXT, font=(FONT, 10, "bold"))
-        self.tag.pack(side="left", pady=(6, 0))
-        self._widgets.append(self.tag)
-
-        # 卡片最右侧的上下移动小箭头（是否可点由 set_state 决定）
+        cy = height / 2
+        self.strip = self.create_rectangle(0, 0, self.STRIP_W, height + 2, width=0, fill=ACCENT, state="hidden")
+        self.title = self.create_text(self.STRIP_W + self.PAD_X, cy, anchor="w", font=self.f_title, fill=TEXT)
+        self.tag = self.create_text(0, cy + 3, anchor="w", font=self.f_tag, fill=ACCENT_TEXT, text="当前",
+                                    state="hidden")
+        self.time = self.create_text(0, cy, anchor="e", font=self.f_time, fill=MUTED)
         self.arrows = {}
         if on_move:
-            mover = tk.Frame(body, bg=SURFACE)
-            mover.pack(side="right", padx=(16, 0))
-            self._widgets.append(mover)
-            for text, delta in (("▲", -1), ("▼", 1)):
-                lbl = tk.Label(mover, text=text, bg=SURFACE, font=(FONT, 9), padx=4, pady=0)
-                lbl.pack()
-                lbl.bind("<Button-1>", lambda e, d=delta: self._move(d))
-                lbl.bind("<Enter>", lambda e, d=delta: self._arrow_hover(d, True))
-                lbl.bind("<Leave>", lambda e, d=delta: self._arrow_hover(d, False, e))
-                self.arrows[delta] = lbl
+            gap = self.f_arrow.metrics("linespace") / 2
+            for text, delta, dy in (("▲", -1, -gap), ("▼", 1, gap)):
+                item = self.create_text(0, cy + dy, anchor="center", font=self.f_arrow, text=text)
+                self.tag_bind(item, "<Button-1>", lambda e, d=delta: self._move(d))
+                self.tag_bind(item, "<Enter>", lambda e, d=delta: self._arrow_hover(d, True))
+                self.tag_bind(item, "<Leave>", lambda e, d=delta: self._arrow_hover(d, False))
+                self.arrows[delta] = item
 
-        self.time_label = tk.Label(body, bg=SURFACE, fg=MUTED, font=(FONT, 13), anchor="e")
-        self.time_label.pack(side="right")
-        self._widgets.append(self.time_label)
-
-        for w in self._widgets:
-            w.bind("<Enter>", lambda e: self._set_bg(SURFACE_HOVER))
-            w.bind("<Leave>", self._on_leave)
-            w.bind("<Double-1>", lambda e: on_activate(self.name))
-        # 箭头只参与背景变色，不响应双击切换
-        self._widgets.extend(self.arrows.values())
+        self.bind("<Configure>", lambda e: self._layout())
+        self.bind("<Enter>", lambda e: self.configure(bg=SURFACE_HOVER))
+        self.bind("<Leave>", lambda e: self.configure(bg=SURFACE))
+        # 箭头上的双击不触发切换
+        self.bind("<Double-1>", lambda e: None if self._hover_arrow is not None else on_activate(self.name))
         self.set_state(name, last_login, current, can_up, can_down)
 
+    def _layout(self):
+        """右侧元素按卡片宽度定位；账号名后面紧跟“当前”标签"""
+        w = self.winfo_width()
+        x = w - self.PAD_X
+        if self.arrows:
+            arrow_w = self.f_arrow.measure("▲") + 8
+            for item in self.arrows.values():
+                self.coords(item, x - arrow_w / 2, self.coords(item)[1])
+            x -= arrow_w + 16
+        self.coords(self.time, x, self.coords(self.time)[1])
+        title_right = self.STRIP_W + self.PAD_X + self.f_title.measure(self.itemcget(self.title, "text"))
+        self.coords(self.tag, title_right + 10, self.coords(self.tag)[1])
+
     def set_state(self, name, last_login, current, can_up, can_down):
-        """原地更新卡片内容（含账号名），卡片位置固定不动，避免重排造成闪动"""
-        _set_if_changed(self.title, text=name)
+        """原地更新卡片内容（含账号名），卡片位置固定不动"""
         self.name = name
         self.last_login = last_login
-        _set_if_changed(self.strip, bg=ACCENT if current else SURFACE)
-        _set_if_changed(self.tag, text="  当前" if current else "")
+        self.itemconfigure(self.title, text=name)
+        state = "normal" if current else "hidden"
+        self.itemconfigure(self.strip, state=state)
+        self.itemconfigure(self.tag, state=state)
         self.enabled = {-1: can_up, 1: can_down}
-        for delta, lbl in self.arrows.items():
-            on = self.enabled[delta]
-            _set_if_changed(lbl, fg=MUTED if on else THUMB, cursor="hand2" if on else "arrow")
+        for delta in self.arrows:
+            self._paint_arrow(delta)
         self.update_time()
+        self._layout()
+
+    def _paint_arrow(self, delta):
+        on = self.enabled.get(delta)
+        color = (ACCENT_TEXT if self._hover_arrow == delta else MUTED) if on else THUMB
+        self.itemconfigure(self.arrows[delta], fill=color)
 
     def _move(self, delta):
         if self.enabled.get(delta) and self._on_move:
             self._on_move(self.name, delta)
 
-    def _arrow_hover(self, delta, entering, event=None):
-        on = self.enabled.get(delta)
-        if entering:
-            self._set_bg(SURFACE_HOVER)
-            if on:
-                self.arrows[delta].configure(fg=ACCENT_TEXT)
-        else:
-            self.arrows[delta].configure(fg=MUTED if on else THUMB)
-            self._on_leave(event)
-
-    def _on_leave(self, event):
-        # 在子控件之间移动时不要闪烁
-        x, y = self.winfo_pointerxy()
-        if self.winfo_containing(x, y) not in self._widgets:
-            self._set_bg(SURFACE)
-
-    def _set_bg(self, color):
-        for w in self._widgets:
-            w.configure(bg=color)
+    def _arrow_hover(self, delta, entering):
+        self._hover_arrow = delta if entering else None
+        self.configure(cursor="hand2" if not entering or self.enabled.get(delta) else "arrow")
+        self._paint_arrow(delta)
 
     def update_time(self):
-        _set_if_changed(self.time_label, text=relative_time(self.last_login))
+        self.itemconfigure(self.time, text=relative_time(self.last_login))
 
 
 class LaunchPage(ttk.Frame):
