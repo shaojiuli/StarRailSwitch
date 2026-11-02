@@ -377,6 +377,13 @@ def confirm(parent, title, message, ok_text="确定"):
     return result["ok"]
 
 
+def _set_if_changed(widget, **options):
+    """只修改真正变化的选项，避免无谓的重绘"""
+    changed = {k: v for k, v in options.items() if str(widget.cget(k)) != str(v)}
+    if changed:
+        widget.configure(**changed)
+
+
 class AccountCard(tk.Frame):
     """启动页中的单个账号卡片"""
 
@@ -394,9 +401,9 @@ class AccountCard(tk.Frame):
         body.pack(side="left", fill="both", expand=True)
         self._widgets.append(body)
 
-        title = tk.Label(body, text=name, bg=SURFACE, fg=TEXT, font=(FONT, 18, "bold"), anchor="w")
-        title.pack(side="left")
-        self._widgets.append(title)
+        self.title = tk.Label(body, text=name, bg=SURFACE, fg=TEXT, font=(FONT, 18, "bold"), anchor="w")
+        self.title.pack(side="left")
+        self._widgets.append(self.title)
         self.tag = tk.Label(body, bg=SURFACE, fg=ACCENT_TEXT, font=(FONT, 10, "bold"))
         self.tag.pack(side="left", pady=(6, 0))
         self._widgets.append(self.tag)
@@ -425,17 +432,19 @@ class AccountCard(tk.Frame):
             w.bind("<Double-1>", lambda e: on_activate(self.name))
         # 箭头只参与背景变色，不响应双击切换
         self._widgets.extend(self.arrows.values())
-        self.set_state(last_login, current, can_up, can_down)
+        self.set_state(name, last_login, current, can_up, can_down)
 
-    def set_state(self, last_login, current, can_up, can_down):
-        """原地更新卡片内容，避免整张列表重建造成闪动"""
+    def set_state(self, name, last_login, current, can_up, can_down):
+        """原地更新卡片内容（含账号名），卡片位置固定不动，避免重排造成闪动"""
+        _set_if_changed(self.title, text=name)
+        self.name = name
         self.last_login = last_login
-        self.strip.configure(bg=ACCENT if current else SURFACE)
-        self.tag.configure(text="  当前" if current else "")
+        _set_if_changed(self.strip, bg=ACCENT if current else SURFACE)
+        _set_if_changed(self.tag, text="  当前" if current else "")
         self.enabled = {-1: can_up, 1: can_down}
         for delta, lbl in self.arrows.items():
             on = self.enabled[delta]
-            lbl.configure(fg=MUTED if on else THUMB, cursor="hand2" if on else "arrow")
+            _set_if_changed(lbl, fg=MUTED if on else THUMB, cursor="hand2" if on else "arrow")
         self.update_time()
 
     def _move(self, delta):
@@ -463,7 +472,7 @@ class AccountCard(tk.Frame):
             w.configure(bg=color)
 
     def update_time(self):
-        self.time_label.configure(text=relative_time(self.last_login))
+        _set_if_changed(self.time_label, text=relative_time(self.last_login))
 
 
 class LaunchPage(ttk.Frame):
@@ -488,7 +497,7 @@ class LaunchPage(ttk.Frame):
 
     def refresh(self, current_name):
         names = self.app.ordered_names()
-        if names and sorted(names) == sorted(c.name for c in self.cards):
+        if names and len(names) == len(self.cards):
             self._update_in_place(names, current_name)
             return
 
@@ -518,23 +527,14 @@ class LaunchPage(ttk.Frame):
         self.hint.pack(pady=(10, 4))
 
     def _update_in_place(self, names, current_name):
-        """账号集合没变时（切换账号、更新启动时间、调整顺序）只更新现有卡片"""
-        by_name = {c.name: c for c in self.cards}
-        if [c.name for c in self.cards] != names:
-            # 顺序变化：按新顺序重新排列，不销毁控件
-            for n in names:
-                by_name[n].pack_forget()
-            self.hint.pack_forget()
-            for n in names:
-                by_name[n].pack(fill="x", padx=16, pady=6)
-            self.hint.pack(pady=(10, 4))
-            self.cards = [by_name[n] for n in names]
-        for i, n in enumerate(names):
+        """账号数量没变时（切换账号、更新启动时间、调整顺序、重命名），卡片位置不动，
+        只把每个位置上显示的账号内容换掉，避免重排或重建造成闪动"""
+        for i, (card, n) in enumerate(zip(self.cards, names)):
             try:
                 last = load_profile(n)["last_login"]
             except (OSError, ValueError, KeyError):
-                last = by_name[n].last_login
-            by_name[n].set_state(last, n == current_name, i > 0, i < len(names) - 1)
+                last = None
+            card.set_state(n, last, n == current_name, i > 0, i < len(names) - 1)
 
     def update_times(self):
         for c in self.cards:
