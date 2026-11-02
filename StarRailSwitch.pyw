@@ -143,6 +143,29 @@ def launch_game(path):
         raise RuntimeError(f"启动失败（ShellExecute 返回 {ret}），可能取消了 UAC 授权")
 
 
+def set_window_icon(win):
+    """按窗口 DPI 精确加载大/小图标。Tk 的 iconbitmap 在高 DPI 下选错尺寸，任务栏图标会被放大而模糊。"""
+    if not os.path.isfile(ICON_PATH):
+        return
+    try:
+        user32 = ctypes.windll.user32
+        user32.LoadImageW.restype = ctypes.c_void_p
+        user32.LoadImageW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint,
+                                      ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+        user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
+        win.update_idletasks()
+        hwnd = int(win.wm_frame(), 16)
+        dpi = user32.GetDpiForWindow(hwnd) or 96
+        IMAGE_ICON, LR_LOADFROMFILE, WM_SETICON = 1, 0x10, 0x80
+        for which, base in ((1, 32), (0, 16)):  # ICON_BIG, ICON_SMALL
+            size = round(base * dpi / 96)
+            h = user32.LoadImageW(None, ICON_PATH, IMAGE_ICON, size, size, LR_LOADFROMFILE)
+            if h:
+                user32.SendMessageW(hwnd, WM_SETICON, which, h)
+    except (AttributeError, OSError, ValueError, tk.TclError):
+        pass
+
+
 def fingerprint(values):
     h = hashlib.sha256()
     for name in sorted(values):
@@ -337,6 +360,7 @@ def confirm(parent, title, message, ok_text="确定"):
     y = parent.winfo_rooty() + (parent.winfo_height() - dlg.winfo_reqheight()) // 3
     dlg.geometry(f"+{x}+{y}")
     dlg.deiconify()
+    set_window_icon(dlg)
     dlg.grab_set()
     cancel.focus_set()  # 默认焦点在“取消”，防止误按回车删除
     dlg.bind("<Return>", lambda e: close(dlg.focus_get() is not cancel))
@@ -658,6 +682,7 @@ class App(tk.Tk):
             self.iconbitmap(default=ICON_PATH)  # default= 让对话框等子窗口也使用该图标
         self.geometry("680x700")
         self.minsize(560, 680)
+        set_window_icon(self)
         self.cfg = load_config()
         # 首次运行即在程序目录创建存储文件
         os.makedirs(PROFILE_DIR, exist_ok=True)
