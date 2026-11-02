@@ -157,7 +157,7 @@ def set_window_icon(win):
         user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
         user32.SetClassLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
         user32.SetClassLongPtrW.restype = ctypes.c_void_p
-        win.update_idletasks()
+        # 调用方需保证窗口已创建（已执行过 update_idletasks），这里不再额外排版
         hwnd = int(win.wm_frame(), 16)
         dpi = user32.GetDpiForWindow(hwnd) or 96
         IMAGE_ICON, LR_LOADFROMFILE, WM_SETICON = 1, 0x10, 0x80
@@ -206,12 +206,21 @@ def save_profile(name, values, saved_at=None, last_login=None):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+_profile_cache = {}  # 名称 -> (文件修改时间, 数据)，文件未变时不重复读取解析
+
+
 def load_profile(name):
-    with open(profile_path(name), encoding="utf-8") as f:
+    path = profile_path(name)
+    mtime = os.stat(path).st_mtime_ns
+    cached = _profile_cache.get(name)
+    if cached and cached[0] == mtime:
+        return dict(cached[1])
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
     data["values"] = {k: base64.b64decode(v) for k, v in data["values"].items()}
     data.setdefault("last_login", None)
-    return data
+    _profile_cache[name] = (mtime, data)
+    return dict(data)
 
 
 def touch_last_login(name):
@@ -370,6 +379,7 @@ def confirm(parent, title, message, ok_text="确定"):
     y = parent.winfo_rooty() + (parent.winfo_height() - dlg.winfo_reqheight()) // 3
     dlg.geometry(f"+{x}+{y}")
     dlg.deiconify()
+    dlg.update_idletasks()
     set_window_icon(dlg)
     dlg.grab_set()
     cancel.focus_set()  # 默认焦点在“取消”，防止误按回车删除
@@ -795,7 +805,6 @@ class App(tk.Tk):
         if os.path.isfile(ICON_PATH):
             self.iconbitmap(default=ICON_PATH)  # default= 让对话框等子窗口也使用该图标
         self.minsize(560, 360)
-        set_window_icon(self)
         self.cfg = load_config()
         # 首次运行即在程序目录创建存储文件
         os.makedirs(PROFILE_DIR, exist_ok=True)
@@ -805,10 +814,12 @@ class App(tk.Tk):
         self.current_name = None
         self.status = tk.StringVar()
         self.page = "launch"
-        self.bind_all("<MouseWheel>", lambda e: (self.launch_page if self.page == "launch" else self.config_page).on_wheel(e))
+        self.bind_all("<MouseWheel>", lambda e: (self.config_page if self.page == "config" and self.config_page
+                                                  else self.launch_page).on_wheel(e))
 
         self._build_ui()
-        self.fit_height()
+        self.fit_height()  # 内含唯一一次启动排版
+        set_window_icon(self)
         self.show_page("config" if not list_profiles(include_backup=False) else "launch")
         self.after(30_000, self._tick)
         if not is_admin():
@@ -833,8 +844,14 @@ class App(tk.Tk):
         self.container = ttk.Frame(self, padding=(0, 8, 0, 0))
         self.container.pack(fill="both", expand=True)
         self.launch_page = LaunchPage(self.container, self)
-        self.config_page = ConfigPage(self.container, self)
+        self.config_page = None  # 配置页在第一次打开时才创建，加快启动
         self.refresh()
+
+    def _ensure_config_page(self):
+        if self.config_page is None:
+            self.config_page = ConfigPage(self.container, self)
+            self.config_page.refresh(self.current_name)
+        return self.config_page
 
     def set_theme(self, name):
         if name == self.cfg["theme"] or name not in THEMES:
@@ -899,7 +916,8 @@ class App(tk.Tk):
         self.cfg["order"] = names
         save_config(self.cfg)
         self.launch_page.refresh(self.current_name)
-        self.config_page.refresh(self.current_name)
+        if self.config_page:
+            self.config_page.refresh(self.current_name)
 
     def rename_in_order(self, old, new):
         # 新名称的文件可能已写入，会被当作新账号追加在末尾，先剔除
@@ -911,7 +929,8 @@ class App(tk.Tk):
     def show_page(self, page):
         self.page = page
         self.launch_page.pack_forget()
-        self.config_page.pack_forget()
+        if self.config_page:
+            self.config_page.pack_forget()
         self.title_lbl.pack_forget()
         self.launcher_btn.pack_forget()
         if page == "launch":
@@ -922,7 +941,7 @@ class App(tk.Tk):
             self.toggle_btn.configure(text="⚙  配置")
         else:
             self.title_lbl.pack(side="left")
-            self.config_page.pack(fill="both", expand=True)
+            self._ensure_config_page().pack(fill="both", expand=True)
             self._ensure_config_fits()
             self.toggle_btn.configure(text="←  返回")
 
@@ -932,6 +951,8 @@ class App(tk.Tk):
         self.show_page("config" if self.page == "launch" else "launch")
 
     def save_launcher(self):
+        if self.config_page is None:
+            return
         path, args = split_command(self.config_page.launcher_var.get(), self.config_page.launcher_args_var.get())
         self.config_page.launcher_var.set(path)
         self.config_page.launcher_args_var.set(args)
@@ -962,6 +983,8 @@ class App(tk.Tk):
         self.status.set(text)
 
     def game_path(self):
+        if self.config_page is None:
+            return self.cfg["game_path"]
         path = self.config_page.path_var.get().strip()
         if path != self.cfg["game_path"]:
             self.cfg["game_path"] = path
@@ -983,7 +1006,8 @@ class App(tk.Tk):
                 except (OSError, ValueError, KeyError):
                     continue
         self.launch_page.refresh(self.current_name)
-        self.config_page.refresh(self.current_name)
+        if self.config_page:
+            self.config_page.refresh(self.current_name)
         if current is None:
             self.set_status("注册表中没有登录数据（游戏还没登录过？）")
         elif self.current_name:
