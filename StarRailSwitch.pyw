@@ -820,20 +820,35 @@ class App(tk.Tk):
 
         self.header = header = ttk.Frame(self, padding=(18, 12, 12, 8))
         header.pack(fill="x")
-        self.title_lbl = ttk.Label(header, text="✦ 星穹铁道 · 账号切换", style="Title.TLabel")
-        self.launcher_btn = ttk.Button(header, text="▶  官方启动器", style="Launcher.TButton",
-                                       command=self.open_launcher)
         self.toggle_btn = ttk.Button(header, style="Header.TButton", command=self.toggle_page)
         self.toggle_btn.pack(side="right")
+        # 标题与启动器按钮叠放在同一格，切换页面时用 tkraise 换到最上层，不重新排版
+        slot = ttk.Frame(header)
+        slot.pack(side="left", fill="y")
+        slot.grid_rowconfigure(0, weight=1)
+        self.title_box = ttk.Frame(slot)
+        self.title_box.grid(row=0, column=0, sticky="nsew")
+        self.title_lbl = ttk.Label(self.title_box, text="✦ 星穹铁道 · 账号切换", style="Title.TLabel")
+        self.title_lbl.pack(side="left", fill="y")
+        self.launcher_box = ttk.Frame(slot)
+        self.launcher_box.grid(row=0, column=0, sticky="nsew")
+        self.launcher_btn = ttk.Button(self.launcher_box, text="▶  官方启动器", style="Launcher.TButton",
+                                       command=self.open_launcher)
+        self.launcher_btn.pack(side="left")
         tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
 
         self.status_lbl = ttk.Label(self, textvariable=self.status, style="Status.TLabel", anchor="w")
         self.status_lbl.pack(fill="x", side="bottom")
 
+        # 两个页面叠放在同一格并始终排好版，切换时只 tkraise，避免拆装页面造成的空白闪烁
         self.container = ttk.Frame(self, padding=(0, 8, 0, 0))
         self.container.pack(fill="both", expand=True)
+        self.container.grid_rowconfigure(0, weight=1)
+        self.container.grid_columnconfigure(0, weight=1)
         self.launch_page = LaunchPage(self.container, self)
         self.config_page = ConfigPage(self.container, self)
+        for page in (self.launch_page, self.config_page):
+            page.grid(row=0, column=0, sticky="nsew")
         self.refresh()
 
     def set_theme(self, name):
@@ -910,20 +925,17 @@ class App(tk.Tk):
 
     def show_page(self, page):
         self.page = page
-        self.launch_page.pack_forget()
-        self.config_page.pack_forget()
-        self.title_lbl.pack_forget()
-        self.launcher_btn.pack_forget()
         if page == "launch":
             # 启动页标题位置放官方启动器按钮，未填写路径时不可点
             self.launcher_btn.state(["!disabled"] if self.cfg["launcher_path"] else ["disabled"])
-            self.launcher_btn.pack(side="left")
-            self.launch_page.pack(fill="both", expand=True)
+            self.launcher_box.tkraise()
+            self.launch_page.tkraise()
             self.toggle_btn.configure(text="⚙  配置")
         else:
-            self.title_lbl.pack(side="left")
-            self.config_page.pack(fill="both", expand=True)
+            # 需要加高窗口时，先在当前页面仍显示的情况下加高，再切换
             self._ensure_config_fits()
+            self.title_box.tkraise()
+            self.config_page.tkraise()
             self.toggle_btn.configure(text="←  返回")
 
     def toggle_page(self):
