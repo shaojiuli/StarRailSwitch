@@ -384,11 +384,11 @@ class AccountCard(tk.Frame):
         super().__init__(master, bg=SURFACE, cursor="hand2", highlightthickness=1,
                          highlightbackground=BORDER, highlightcolor=BORDER)
         self.name = name
-        self.last_login = last_login
         self._widgets = [self]
+        self._on_move = on_move
 
-        strip = tk.Frame(self, bg=ACCENT if current else SURFACE, width=5)
-        strip.pack(side="left", fill="y")
+        self.strip = tk.Frame(self, bg=SURFACE, width=5)
+        self.strip.pack(side="left", fill="y")
 
         body = tk.Frame(self, bg=SURFACE, padx=18, pady=14)
         body.pack(side="left", fill="both", expand=True)
@@ -397,41 +397,60 @@ class AccountCard(tk.Frame):
         title = tk.Label(body, text=name, bg=SURFACE, fg=TEXT, font=(FONT, 18, "bold"), anchor="w")
         title.pack(side="left")
         self._widgets.append(title)
-        if current:
-            tag = tk.Label(body, text="  当前", bg=SURFACE, fg=ACCENT_TEXT, font=(FONT, 10, "bold"))
-            tag.pack(side="left", pady=(6, 0))
-            self._widgets.append(tag)
+        self.tag = tk.Label(body, bg=SURFACE, fg=ACCENT_TEXT, font=(FONT, 10, "bold"))
+        self.tag.pack(side="left", pady=(6, 0))
+        self._widgets.append(self.tag)
 
-        # 卡片最右侧的上下移动小箭头
-        arrows = []
+        # 卡片最右侧的上下移动小箭头（是否可点由 set_state 决定）
+        self.arrows = {}
         if on_move:
             mover = tk.Frame(body, bg=SURFACE)
             mover.pack(side="right", padx=(16, 0))
             self._widgets.append(mover)
-            for text, delta, enabled in (("▲", -1, can_up), ("▼", 1, can_down)):
-                lbl = tk.Label(mover, text=text, bg=SURFACE, fg=MUTED if enabled else THUMB,
-                               font=(FONT, 9), padx=4, pady=0, cursor="hand2" if enabled else "arrow")
+            for text, delta in (("▲", -1), ("▼", 1)):
+                lbl = tk.Label(mover, text=text, bg=SURFACE, font=(FONT, 9), padx=4, pady=0)
                 lbl.pack()
-                if enabled:
-                    lbl.bind("<Button-1>", lambda e, d=delta: on_move(self.name, d))
-                    lbl.bind("<Enter>", lambda e, l=lbl: (self._set_bg(SURFACE_HOVER), l.configure(fg=ACCENT_TEXT)))
-                    lbl.bind("<Leave>", lambda e, l=lbl: (l.configure(fg=MUTED), self._on_leave(e)))
-                else:
-                    lbl.bind("<Enter>", lambda e: self._set_bg(SURFACE_HOVER))
-                    lbl.bind("<Leave>", self._on_leave)
-                arrows.append(lbl)
+                lbl.bind("<Button-1>", lambda e, d=delta: self._move(d))
+                lbl.bind("<Enter>", lambda e, d=delta: self._arrow_hover(d, True))
+                lbl.bind("<Leave>", lambda e, d=delta: self._arrow_hover(d, False, e))
+                self.arrows[delta] = lbl
 
         self.time_label = tk.Label(body, bg=SURFACE, fg=MUTED, font=(FONT, 13), anchor="e")
         self.time_label.pack(side="right")
         self._widgets.append(self.time_label)
-        self.update_time()
 
         for w in self._widgets:
             w.bind("<Enter>", lambda e: self._set_bg(SURFACE_HOVER))
             w.bind("<Leave>", self._on_leave)
             w.bind("<Double-1>", lambda e: on_activate(self.name))
         # 箭头只参与背景变色，不响应双击切换
-        self._widgets.extend(arrows)
+        self._widgets.extend(self.arrows.values())
+        self.set_state(last_login, current, can_up, can_down)
+
+    def set_state(self, last_login, current, can_up, can_down):
+        """原地更新卡片内容，避免整张列表重建造成闪动"""
+        self.last_login = last_login
+        self.strip.configure(bg=ACCENT if current else SURFACE)
+        self.tag.configure(text="  当前" if current else "")
+        self.enabled = {-1: can_up, 1: can_down}
+        for delta, lbl in self.arrows.items():
+            on = self.enabled[delta]
+            lbl.configure(fg=MUTED if on else THUMB, cursor="hand2" if on else "arrow")
+        self.update_time()
+
+    def _move(self, delta):
+        if self.enabled.get(delta) and self._on_move:
+            self._on_move(self.name, delta)
+
+    def _arrow_hover(self, delta, entering, event=None):
+        on = self.enabled.get(delta)
+        if entering:
+            self._set_bg(SURFACE_HOVER)
+            if on:
+                self.arrows[delta].configure(fg=ACCENT_TEXT)
+        else:
+            self.arrows[delta].configure(fg=MUTED if on else THUMB)
+            self._on_leave(event)
 
     def _on_leave(self, event):
         # 在子控件之间移动时不要闪烁
@@ -468,13 +487,17 @@ class LaunchPage(ttk.Frame):
             self.canvas.yview_scroll(int(-event.delta / 120), "units")
 
     def refresh(self, current_name):
+        names = self.app.ordered_names()
+        if names and sorted(names) == sorted(c.name for c in self.cards):
+            self._update_in_place(names, current_name)
+            return
+
         for c in self.cards:
             c.destroy()
         self.cards.clear()
         for w in self.inner.winfo_children():
             w.destroy()
 
-        names = self.app.ordered_names()
         if not names:
             tk.Label(self.inner, text="还没有保存任何账号\n点击右上角「配置」添加",
                      bg=BG, fg=MUTED, font=(FONT, 13), justify="center").pack(pady=60)
@@ -490,8 +513,28 @@ class LaunchPage(ttk.Frame):
             card.pack(fill="x", padx=16, pady=6)
             self.cards.append(card)
 
-        tk.Label(self.inner, text="双击账号：关闭游戏 → 切换账号 → 重新启动 · 右侧 ▲▼ 调整顺序",
-                 bg=BG, fg=MUTED, font=(FONT, 9)).pack(pady=(10, 4))
+        self.hint = tk.Label(self.inner, text="双击账号：关闭游戏 → 切换账号 → 重新启动 · 右侧 ▲▼ 调整顺序",
+                             bg=BG, fg=MUTED, font=(FONT, 9))
+        self.hint.pack(pady=(10, 4))
+
+    def _update_in_place(self, names, current_name):
+        """账号集合没变时（切换账号、更新启动时间、调整顺序）只更新现有卡片"""
+        by_name = {c.name: c for c in self.cards}
+        if [c.name for c in self.cards] != names:
+            # 顺序变化：按新顺序重新排列，不销毁控件
+            for n in names:
+                by_name[n].pack_forget()
+            self.hint.pack_forget()
+            for n in names:
+                by_name[n].pack(fill="x", padx=16, pady=6)
+            self.hint.pack(pady=(10, 4))
+            self.cards = [by_name[n] for n in names]
+        for i, n in enumerate(names):
+            try:
+                last = load_profile(n)["last_login"]
+            except (OSError, ValueError, KeyError):
+                last = by_name[n].last_login
+            by_name[n].set_state(last, n == current_name, i > 0, i < len(names) - 1)
 
     def update_times(self):
         for c in self.cards:
