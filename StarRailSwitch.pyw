@@ -34,6 +34,7 @@ PROCESS_NAME = "StarRail.exe"
 DEFAULT_GAME_PATH = r"E:\Star Rail\Game\StarRail.exe"
 DEFAULT_LAUNCHER_ARGS = "--game=hkrpg_cn"  # 米哈游启动器直接打开星穹铁道页面
 AUTO_BACKUP_NAME = "_切换前自动备份"
+ROW_HEIGHT = 36  # 配置页账号列表行高
 TIME_FMT = "%Y-%m-%d %H:%M:%S"
 KILL_TIMEOUT = 15  # 秒
 
@@ -281,7 +282,6 @@ def setup_style(root):
     s.configure("TButton", background=SURFACE, foreground=TEXT, borderwidth=0, padding=(12, 6), focuscolor=SURFACE)
     s.map("TButton", background=[("pressed", BORDER), ("active", SURFACE_HOVER)],
           foreground=[("disabled", MUTED)])
-    s.configure("Arrow.TButton", font=(FONT, 12), padding=(6, 10))
     s.configure("Launcher.TButton", background=ACCENT, foreground="#1b1d29", font=(FONT, 11, "bold"),
                 padding=(14, 6))
     s.map("Launcher.TButton", background=[("disabled", SURFACE), ("pressed", ACCENT_DARK), ("active", ACCENT_DARK)],
@@ -372,12 +372,11 @@ def confirm(parent, title, message, ok_text="确定"):
 class AccountCard(tk.Frame):
     """启动页中的单个账号卡片"""
 
-    def __init__(self, master, name, last_login, current, on_activate, on_select):
+    def __init__(self, master, name, last_login, current, on_activate, on_move=None, can_up=False, can_down=False):
         super().__init__(master, bg=SURFACE, cursor="hand2", highlightthickness=1,
                          highlightbackground=BORDER, highlightcolor=BORDER)
         self.name = name
         self.last_login = last_login
-        self.selected = False
         self._widgets = [self]
 
         strip = tk.Frame(self, bg=ACCENT if current else SURFACE, width=5)
@@ -395,6 +394,25 @@ class AccountCard(tk.Frame):
             tag.pack(side="left", pady=(6, 0))
             self._widgets.append(tag)
 
+        # 卡片最右侧的上下移动小箭头
+        arrows = []
+        if on_move:
+            mover = tk.Frame(body, bg=SURFACE)
+            mover.pack(side="right", padx=(16, 0))
+            self._widgets.append(mover)
+            for text, delta, enabled in (("▲", -1, can_up), ("▼", 1, can_down)):
+                lbl = tk.Label(mover, text=text, bg=SURFACE, fg=MUTED if enabled else THUMB,
+                               font=(FONT, 9), padx=4, pady=0, cursor="hand2" if enabled else "arrow")
+                lbl.pack()
+                if enabled:
+                    lbl.bind("<Button-1>", lambda e, d=delta: on_move(self.name, d))
+                    lbl.bind("<Enter>", lambda e, l=lbl: (self._set_bg(SURFACE_HOVER), l.configure(fg=ACCENT_TEXT)))
+                    lbl.bind("<Leave>", lambda e, l=lbl: (l.configure(fg=MUTED), self._on_leave(e)))
+                else:
+                    lbl.bind("<Enter>", lambda e: self._set_bg(SURFACE_HOVER))
+                    lbl.bind("<Leave>", self._on_leave)
+                arrows.append(lbl)
+
         self.time_label = tk.Label(body, bg=SURFACE, fg=MUTED, font=(FONT, 13), anchor="e")
         self.time_label.pack(side="right")
         self._widgets.append(self.time_label)
@@ -403,19 +421,14 @@ class AccountCard(tk.Frame):
         for w in self._widgets:
             w.bind("<Enter>", lambda e: self._set_bg(SURFACE_HOVER))
             w.bind("<Leave>", self._on_leave)
-            w.bind("<Button-1>", lambda e: on_select(self.name))
             w.bind("<Double-1>", lambda e: on_activate(self.name))
-
-    def set_selected(self, selected):
-        self.selected = selected
-        color = ACCENT_TEXT if selected else BORDER
-        self.configure(highlightbackground=color, highlightcolor=color)
-        self._set_bg(SURFACE_HOVER if selected else SURFACE)
+        # 箭头只参与背景变色，不响应双击切换
+        self._widgets.extend(arrows)
 
     def _on_leave(self, event):
         # 在子控件之间移动时不要闪烁
         x, y = self.winfo_pointerxy()
-        if self.winfo_containing(x, y) not in self._widgets and not self.selected:
+        if self.winfo_containing(x, y) not in self._widgets:
             self._set_bg(SURFACE)
 
     def _set_bg(self, color):
@@ -431,15 +444,6 @@ class LaunchPage(ttk.Frame):
         super().__init__(master)
         self.app = app
         self.cards = []
-        self.selected_name = None
-
-        # 右侧上下箭头：调整选中账号的位置
-        arrows = ttk.Frame(self)
-        arrows.pack(side="right", padx=(0, 12))
-        self.up_btn = ttk.Button(arrows, text="▲", style="Arrow.TButton", width=3, command=lambda: self.move(-1))
-        self.up_btn.pack(pady=(0, 6))
-        self.down_btn = ttk.Button(arrows, text="▼", style="Arrow.TButton", width=3, command=lambda: self.move(1))
-        self.down_btn.pack()
 
         self.canvas = tk.Canvas(self, bg=BG, highlightthickness=0, bd=0)
         self.canvas.pack(side="left", fill="both", expand=True)
@@ -466,40 +470,20 @@ class LaunchPage(ttk.Frame):
         if not names:
             tk.Label(self.inner, text="还没有保存任何账号\n点击右上角「配置」添加",
                      bg=BG, fg=MUTED, font=(FONT, 13), justify="center").pack(pady=60)
-            self.selected_name = None
-            self._update_arrows()
             return
 
-        for n in names:
+        for i, n in enumerate(names):
             try:
                 p = load_profile(n)
             except (OSError, ValueError, KeyError):
                 continue
-            card = AccountCard(self.inner, n, p["last_login"], n == current_name, self.app.activate, self.select)
-            card.pack(fill="x", padx=(16, 4), pady=6)
+            card = AccountCard(self.inner, n, p["last_login"], n == current_name, self.app.activate,
+                               self.app.move_account, can_up=i > 0, can_down=i < len(names) - 1)
+            card.pack(fill="x", padx=16, pady=6)
             self.cards.append(card)
-        if self.selected_name not in names:
-            self.selected_name = None
-        self.select(self.selected_name)
 
-        tk.Label(self.inner, text="单击选中后可用右侧箭头调整顺序 · 双击：关闭游戏 → 切换账号 → 重新启动",
+        tk.Label(self.inner, text="双击账号：关闭游戏 → 切换账号 → 重新启动 · 右侧 ▲▼ 调整顺序",
                  bg=BG, fg=MUTED, font=(FONT, 9)).pack(pady=(10, 4))
-
-    def select(self, name):
-        self.selected_name = name
-        for c in self.cards:
-            c.set_selected(c.name == name)
-        self._update_arrows()
-
-    def _update_arrows(self):
-        names = [c.name for c in self.cards]
-        i = names.index(self.selected_name) if self.selected_name in names else -1
-        self.up_btn.state(["!disabled"] if i > 0 else ["disabled"])
-        self.down_btn.state(["!disabled"] if 0 <= i < len(names) - 1 else ["disabled"])
-
-    def move(self, delta):
-        if self.selected_name:
-            self.app.move_account(self.selected_name, delta)
 
     def update_times(self):
         for c in self.cards:
@@ -557,47 +541,99 @@ class ConfigPage(ttk.Frame):
         ]:
             ttk.Button(actions, text=text, command=cmd, style=style).pack(side="left", padx=(0, 8))
 
-        mid = ttk.Frame(self)
-        mid.pack(fill="both", expand=True)
+        # 账号列表：每行内含「重命名」「删除」按钮；单击行选中，供上方按钮使用
+        self.selected_name = None
+        self.rows = {}
+        box = tk.Frame(self, bg=SURFACE, highlightthickness=1, highlightbackground=BORDER, highlightcolor=BORDER)
+        box.pack(fill="both", expand=True)
+        head = tk.Frame(box, bg=SURFACE)
+        head.pack(fill="x")
+        self._grid_columns(head)
+        for col, text in enumerate(("名称", "保存时间", "上次启动", "操作")):
+            tk.Label(head, text=text, bg=SURFACE, fg=MUTED, font=(FONT, 9),
+                     anchor="w" if col == 0 else "center").grid(row=0, column=col, sticky="ew",
+                                                                padx=(10, 4) if col == 0 else 4, pady=(6, 4))
+        tk.Frame(box, bg=BORDER, height=1).pack(fill="x")
 
-        cols = ("name", "saved_at", "last_login")
-        self.tree = ttk.Treeview(mid, columns=cols, show="headings", selectmode="browse", height=5)
-        for col, text, width, anchor in [("name", "名称", 130, "w"), ("saved_at", "保存时间", 165, "center"),
-                                         ("last_login", "上次启动", 95, "center")]:
-            self.tree.heading(col, text=text)
-            self.tree.column(col, width=width, anchor=anchor)
-        self.tree.tag_configure("current", foreground=ACCENT_TEXT)
-        self.tree.pack(side="left", fill="both", expand=True)
-        sb = ttk.Scrollbar(mid, orient="vertical", command=self.tree.yview, style="Thin.Vertical.TScrollbar")
-        self.tree.configure(yscrollcommand=autohide_scrollbar(sb, side="left", fill="y", after=self.tree))
+        self.canvas = tk.Canvas(box, bg=SURFACE, highlightthickness=0, bd=0, height=5 * ROW_HEIGHT)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        sb = ttk.Scrollbar(box, orient="vertical", command=self.canvas.yview, style="Thin.Vertical.TScrollbar")
+        self.canvas.configure(yscrollcommand=autohide_scrollbar(sb, side="right", fill="y"))
+        self.inner = tk.Frame(self.canvas, bg=SURFACE)
+        self._win = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        self.inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(self._win, width=e.width))
 
-        side = ttk.Frame(mid)
-        side.pack(side="left", fill="y", padx=(12, 0))
-        ttk.Button(side, text="重命名", command=self.rename, width=8).pack(fill="x", pady=(0, 6))
-        ttk.Button(side, text="删除", command=self.delete, style="Danger.TButton", width=8).pack(fill="x")
+    @staticmethod
+    def _grid_columns(frame):
+        # 表头与每一行使用相同的固定列宽（按 DPI 缩放，需大于内容宽度），保证对齐
+        scale = frame.winfo_fpixels("1i") / 96
+        frame.grid_columnconfigure(0, weight=1)
+        for col, width in ((1, 160), (2, 92), (3, 128)):
+            frame.grid_columnconfigure(col, minsize=int(width * scale))
+
+    def on_wheel(self, event):
+        if self.winfo_ismapped() and self.inner.winfo_height() > self.canvas.winfo_height():
+            self.canvas.yview_scroll(int(-event.delta / 120), "units")
 
     def refresh(self, current_name):
-        self.tree.delete(*self.tree.get_children())
+        for w in self.inner.winfo_children():
+            w.destroy()
+        self.rows.clear()
         names = self.app.ordered_names()
         if AUTO_BACKUP_NAME in list_profiles():
             names.append(AUTO_BACKUP_NAME)
+        if not names:
+            tk.Label(self.inner, text="还没有保存任何账号", bg=SURFACE, fg=MUTED,
+                     font=(FONT, 10)).pack(pady=24)
         for name in names:
             try:
                 p = load_profile(name)
+                saved, last = p.get("saved_at", ""), relative_time(p["last_login"])
             except (OSError, ValueError, KeyError):
-                self.tree.insert("", "end", iid=name, values=(name, "（文件损坏）", ""))
-                continue
-            tags = ("current",) if name == current_name else ()
-            label = ("● " if tags else "") + name
-            self.tree.insert("", "end", iid=name, tags=tags,
-                             values=(label, p.get("saved_at", ""), relative_time(p["last_login"])))
+                saved, last = "（文件损坏）", ""
+            self._add_row(name, saved, last, name == current_name)
+        if self.selected_name not in self.rows:
+            self.selected_name = None
+        self.select(self.selected_name)
+
+    def _add_row(self, name, saved, last, current):
+        row = tk.Frame(self.inner, bg=SURFACE, height=ROW_HEIGHT)
+        row.pack(fill="x")
+        row.grid_propagate(False)
+        self._grid_columns(row)
+        row.grid_rowconfigure(0, weight=1)
+        fg = ACCENT_TEXT if current else TEXT
+        cells = [
+            tk.Label(row, text=("● " if current else "") + name, bg=SURFACE, fg=fg, font=(FONT, 10), anchor="w"),
+            tk.Label(row, text=saved, bg=SURFACE, fg=fg, font=(FONT, 10)),
+            tk.Label(row, text=last, bg=SURFACE, fg=fg, font=(FONT, 10)),
+        ]
+        for col, cell in enumerate(cells):
+            cell.grid(row=0, column=col, sticky="ew", padx=(10, 4) if col == 0 else 4)
+        ops = tk.Frame(row, bg=SURFACE)
+        ops.grid(row=0, column=3)
+        for text, color, cmd in (("重命名", TEXT, self.rename), ("删除", DANGER, self.delete)):
+            btn = tk.Label(ops, text=text, bg=BG, fg=color, font=(FONT, 9), padx=10, pady=2, cursor="hand2")
+            btn.pack(side="left", padx=3)
+            btn.bind("<Button-1>", lambda e, c=cmd: c(name))
+            btn.bind("<Enter>", lambda e, b=btn: b.configure(bg=BORDER))
+            btn.bind("<Leave>", lambda e, b=btn: b.configure(bg=BG))
+        for w in [row, ops] + cells:
+            w.bind("<Button-1>", lambda e: self.select(name))
+        self.rows[name] = [row, ops] + cells
+
+    def select(self, name):
+        self.selected_name = name
+        for n, widgets in self.rows.items():
+            for w in widgets:
+                w.configure(bg=SURFACE_HOVER if n == name else SURFACE)
 
     def selected(self):
-        sel = self.tree.selection()
-        if not sel:
-            messagebox.showinfo(APP_TITLE, "请先在列表中选择一个快照", parent=self)
+        if not self.selected_name:
+            messagebox.showinfo(APP_TITLE, "请先在列表中单击选择一个账号", parent=self)
             return None
-        return sel[0]
+        return self.selected_name
 
     def browse(self):
         path = filedialog.askopenfilename(
@@ -669,10 +705,7 @@ class ConfigPage(ttk.Frame):
         self.app.refresh()
         self.app.set_status(f"已更新【{name}】")
 
-    def rename(self):
-        name = self.selected()
-        if not name:
-            return
+    def rename(self, name):
         try:
             p = load_profile(name)
         except (OSError, ValueError, KeyError) as e:
@@ -691,12 +724,11 @@ class ConfigPage(ttk.Frame):
         save_profile(new, p["values"], p.get("saved_at"), p["last_login"])
         self.app.rename_in_order(name, new)
         os.remove(profile_path(name))
+        if self.selected_name == name:
+            self.selected_name = new
         self.app.refresh()
 
-    def delete(self):
-        name = self.selected()
-        if not name:
-            return
+    def delete(self, name):
         if confirm(self.app, "删除账号", f"确定要删除【{name}】吗？\n删除后该账号的登录快照无法恢复。", "删除"):
             os.remove(profile_path(name))
             self.app.refresh()
@@ -729,7 +761,8 @@ class App(tk.Tk):
         self.busy = False
         self.current_name = None
         self.status = tk.StringVar()
-        self.bind_all("<MouseWheel>", lambda e: self.launch_page.on_wheel(e))
+        self.page = "launch"
+        self.bind_all("<MouseWheel>", lambda e: (self.launch_page if self.page == "launch" else self.config_page).on_wheel(e))
 
         self._build_ui()
         self.fit_height()
@@ -787,7 +820,7 @@ class App(tk.Tk):
         if cards:
             card_h = cards[0].winfo_reqheight()
         else:
-            tmp = AccountCard(self.launch_page.inner, "账号", None, False, lambda n: None, lambda n: None)
+            tmp = AccountCard(self.launch_page.inner, "账号", None, False, lambda n: None)
             card_h = tmp.winfo_reqheight()
             tmp.destroy()
         hint_h = 40  # 底部提示文字及间距
@@ -826,7 +859,8 @@ class App(tk.Tk):
         self.config_page.refresh(self.current_name)
 
     def rename_in_order(self, old, new):
-        self.cfg["order"] = [new if n == old else n for n in self.ordered_names()]
+        # 新名称的文件可能已写入，会被当作新账号追加在末尾，先剔除
+        self.cfg["order"] = [new if n == old else n for n in self.ordered_names() if n != new]
         save_config(self.cfg)
 
     # ----- 页面 -----
