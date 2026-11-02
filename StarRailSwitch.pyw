@@ -480,6 +480,10 @@ class AccountCard(tk.Canvas):
             text = text[:-1]
         return text + "…" if text else ""
 
+    def set_recent(self, recent):
+        """左侧橙色竖条：标记最近一次登录的账号。竖条画在卡片最左边的固定位置，不影响文字排版"""
+        self.itemconfigure(self.strip, state="normal" if recent else "hidden")
+
     def set_state(self, name, note, last_login, current, can_up, can_down):
         """原地更新卡片内容（含账号名、备注），卡片位置固定不动"""
         self.name = name
@@ -487,7 +491,6 @@ class AccountCard(tk.Canvas):
         self.last_login = last_login
         self.itemconfigure(self.title, text=name)
         state = "normal" if current else "hidden"
-        self.itemconfigure(self.strip, state=state)
         self.itemconfigure(self.tag, state=state)
         self.enabled = {-1: can_up, 1: can_down}
         for delta in self.arrows:
@@ -562,6 +565,7 @@ class LaunchPage(ttk.Frame):
                                self.app.move_account, can_up=i > 0, can_down=i < len(names) - 1)
             card.pack(fill="x", padx=16, pady=6)
             self.cards.append(card)
+        self._mark_recent()
 
         self.hint = tk.Label(self.inner, text="双击账号：关闭游戏 → 切换账号 → 重新启动 · 右侧 ▲▼ 调整顺序",
                              bg=BG, fg=MUTED, font=(FONT, 9))
@@ -577,6 +581,13 @@ class LaunchPage(ttk.Frame):
             except (OSError, ValueError, KeyError):
                 note, last = "", None
             card.set_state(n, note, last, n == current_name, i > 0, i < len(names) - 1)
+        self._mark_recent()
+
+    def _mark_recent(self):
+        """给“上次启动”时间离现在最近的账号显示左侧橙色竖条"""
+        recent = max((c for c in self.cards if c.last_login), key=lambda c: c.last_login, default=None)
+        for c in self.cards:
+            c.set_recent(c is recent)
 
     def update_times(self):
         for c in self.cards:
