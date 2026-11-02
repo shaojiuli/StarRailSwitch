@@ -1,0 +1,15 @@
+# 账号快照：包含登录凭据，绝对不能提交
+profiles/
+
+# 本机配置与快捷方式
+config.json
+*.lnk
+
+# 图标原图（程序只用 logo.ico）
+logo.jpg
+
+# 打包产物
+build/
+dist/
+*.spec
+__pycache__/
